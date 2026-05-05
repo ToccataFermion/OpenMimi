@@ -5,6 +5,7 @@ deterministic and offline.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 
@@ -450,6 +451,53 @@ async def test_raw_arguments_only_input_becomes_protocol_error() -> None:
     log = audit.logs[0]
     assert log["tool"] == "browser"
     assert log["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+
+
+class _SlowBrowserTool(ToolBase):
+    name = "browser"
+
+    def to_params(self) -> dict[str, Any]:
+        return {"name": self.name, "description": "slow", "input_schema": {}}
+
+    async def __call__(self, tool_input: dict[str, Any]) -> ToolResult:
+        await asyncio.sleep(30.0)
+        return ToolResult(output="never")
+
+
+@pytest.mark.asyncio
+async def test_tool_invocation_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openmimi.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "_tool_run_timeout_seconds", lambda: 0.12)
+
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("t1", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("recovered")], stop_reason="end_turn"),
+        ]
+    )
+    coll = _make_collection(_SlowBrowserTool())
+    audit = _RecordingAudit()
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages, tools=coll, llm=llm, session_id="s", audit=audit
+    )
+
+    assert len(audit.logs) == 1
+    assert audit.logs[0]["is_error"] is True
+    assert "timed out" in (audit.logs[0]["result_summary"] or "").lower()
+    tr = out[2]["content"][0]
+    assert tr["is_error"] is True
+    assert out[-1]["role"] == "assistant"
+    last_parts = [
+        b.get("text", "")
+        for b in (out[-1].get("content") or [])
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    assert "recovered" in "\n".join(last_parts)
 
 
 @pytest.mark.asyncio

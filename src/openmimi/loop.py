@@ -15,7 +15,11 @@ The loop:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+import os
+import sys
 import time
 from typing import Any, Protocol
 
@@ -62,6 +66,39 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 _RESULT_SUMMARY_MAX_CHARS = 500
 _OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
+_DEFAULT_TOOL_TIMEOUT_S = 300.0
+
+
+def _tool_run_timeout_seconds() -> float | None:
+    """Per-tool wall-clock budget; ``None`` means no asyncio-level cap.
+
+    Browser-use/CDP calls can hang indefinitely on some sites; this is
+    independent from Anthropic's HTTP timeout (OPENMIMI_LLM_TIMEOUT_S).
+    Set OPENMIMI_TOOL_TIMEOUT_S to ``0`` to disable (not recommended).
+    """
+    raw = os.environ.get("OPENMIMI_TOOL_TIMEOUT_S", "300").strip().lower()
+    if raw in ("", "0", "none", "off", "inf", "infinity"):
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return _DEFAULT_TOOL_TIMEOUT_S
+    return None if v <= 0 else v
+
+
+def _tool_progress(message: str) -> None:
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _preview_tool_input(tool_input: dict[str, Any]) -> str:
+    try:
+        s = json.dumps(tool_input, ensure_ascii=False)
+    except TypeError:
+        s = str(tool_input)
+    return (s[:160] + "...") if len(s) > 160 else s
 
 
 async def sampling_loop(
@@ -134,9 +171,44 @@ async def sampling_loop(
                     )
                 continue
 
+            _tool_progress(
+                f"[tool] step {step}: {tool_name} starting: "
+                f"{_preview_tool_input(tool_input)}"
+            )
             t0 = time.monotonic()
+            tout = _tool_run_timeout_seconds()
             try:
-                result = await tools.run(tool_name, tool_input)
+                run_coro = tools.run(tool_name, tool_input)
+                if tout is not None:
+                    result = await asyncio.wait_for(run_coro, timeout=tout)
+                else:
+                    result = await run_coro
+            except TimeoutError:
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                err_text = (
+                    f"Tool timed out after {tout}s (OPENMIMI_TOOL_TIMEOUT_S). "
+                    "The browser automation call did not finish; try the "
+                    "instruction again or restart chat if the window is stuck."
+                )
+                tool_result_blocks.append(
+                    _make_error_result_block(block_id, err_text)
+                )
+                if audit is not None:
+                    audit.log_tool_call(
+                        session_id=session_id,
+                        step=step,
+                        tool=tool_name,
+                        tool_input=tool_input,
+                        result_summary=err_text[:_RESULT_SUMMARY_MAX_CHARS],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                        image_path=None,
+                        duration_ms=duration_ms,
+                    )
+                _tool_progress(
+                    f"[tool] step {step}: {tool_name} TIMEOUT after {tout}s"
+                )
+                continue
             except Exception as exc:
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 err_text = (
@@ -157,10 +229,16 @@ async def sampling_loop(
                         image_path=None,
                         duration_ms=duration_ms,
                     )
+                _tool_progress(
+                    f"[tool] step {step}: {tool_name} error: {exc!s}"
+                )
                 continue
 
             duration_ms = int((time.monotonic() - t0) * 1000)
             tool_result_blocks.append(_to_tool_result_block(block_id, result))
+            _tool_progress(
+                f"[tool] step {step}: {tool_name} finished in {duration_ms}ms"
+            )
 
             if audit is not None:
                 image_path = _persist_screenshot_if_any(
