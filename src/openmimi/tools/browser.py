@@ -539,8 +539,7 @@ class BrowserTool(ToolBase):
         session = self._session
         assert session is not None
         gp = getattr(session, "get_page_targets", None)
-        bus = getattr(session, "event_bus", None)
-        if not callable(gp) or bus is None:
+        if not callable(gp):
             raise _BrowserToolError(
                 ErrorCode.TOOL_INTERNAL_ERROR,
                 "switch_tab requires a live BrowserSession with tab support",
@@ -554,9 +553,8 @@ class BrowserTool(ToolBase):
                 f"switch_tab: tab_index {idx} out of range (open tabs: {n})",
             )
         tid = targets[idx - 1].target_id
-        from browser_use.browser.events import SwitchTabEvent
 
-        await bus.dispatch(SwitchTabEvent(target_id=tid))
+        await _focus_page_target_for_agent(session, tid)
         await asyncio.sleep(0.12)
         targets2 = gp()
         rows = self._open_tab_rows(session, targets2)
@@ -694,9 +692,7 @@ class BrowserTool(ToolBase):
         if session is None:
             return None, {}
         gp = getattr(session, "get_page_targets", None)
-        bus = getattr(session, "event_bus", None)
-        dispatch = getattr(bus, "dispatch", None) if bus is not None else None
-        if not callable(gp) or not callable(dispatch):
+        if not callable(gp):
             return None, {}
 
         await asyncio.sleep(_POST_POINTER_TAB_SETTLE_S)
@@ -723,10 +719,8 @@ class BrowserTool(ToolBase):
 
         note_lines: list[str] = []
         if new_ids:
-            from browser_use.browser.events import SwitchTabEvent
-
             newest = new_ids[-1]
-            await dispatch(SwitchTabEvent(target_id=newest))
+            await _focus_page_target_for_agent(session, newest)
             frag["switched_to_target_id"] = newest
             note_lines.append(
                 f"New tab(s) after {verb} ({len(new_ids)} opened). "
@@ -817,6 +811,49 @@ class BrowserTool(ToolBase):
             retryable=retryable,
             downloads=list(downloads) if downloads else [],
         )
+
+
+async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
+    """Point agent focus at ``target_id`` (e.g. newest tab after a ``target=_blank`` click).
+
+    Avoids ``await event_bus.dispatch(SwitchTabEvent)`` which ends by awaiting
+    ``AgentFocusChangedEvent`` and can stall ~54s when CDP appears disconnected
+    (``RECONNECT_WAIT_TIMEOUT``). OpenMimi only needs CDP activate + cache
+    invalidate like ``BrowserSession``'s handlers.
+
+    Fakes without ``session_manager`` fall back to ``SwitchTabEvent``.
+    """
+    sm = getattr(session, "session_manager", None)
+    gc = getattr(session, "get_or_create_cdp_session", None)
+    if sm is None or not callable(gc):
+        from browser_use.browser.events import SwitchTabEvent
+
+        await session.event_bus.dispatch(SwitchTabEvent(target_id=target_id))
+        return
+
+    cdp_session = await gc(target_id=target_id, focus=True)
+    await cdp_session.cdp_client.send.Target.activateTarget(
+        params={"targetId": target_id}
+    )
+
+    dw = getattr(session, "_dom_watchdog", None)
+    if dw is not None:
+        dw.clear_cache()
+    session._cached_browser_state_summary = None
+    session._cached_selector_map.clear()
+
+    await gc(target_id=target_id, focus=True)
+
+    profile = getattr(session, "browser_profile", None)
+    if (
+        profile is not None
+        and getattr(profile, "viewport", None)
+        and not getattr(profile, "no_viewport", False)
+    ):
+        vw = profile.viewport.width
+        vh = profile.viewport.height
+        dpr = profile.device_scale_factor or 1.0
+        await session._cdp_set_viewport(vw, vh, dpr, target_id=target_id)
 
 
 def _parse_coords(raw: Any) -> tuple[int, int] | None:
