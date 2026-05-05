@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,11 @@ from .browser_schema import (
     ExtractInput,
     HoverInput,
     NavigateInput,
+    OpenTabRow,
     PressInput,
     ScreenshotInput,
     ScrollInput,
+    SwitchTabInput,
     TargetResolved,
     TypeInput,
     WaitInput,
@@ -43,7 +46,11 @@ _TOOL_DESCRIPTION = (
     "current URL/title in `details`. Prefer `target_text`/`target_hint`; fall "
     "back to `coordinate` only when the element has no stable text. For "
     "navigation menus that expand on mouse-over, use `hover` first to reveal "
-    "the submenu, then `click` the desired entry."
+    "the submenu, then `click` the desired entry. When a link opens a new tab, "
+    "`details.open_tabs` lists every tab and the tool output explains focus; "
+    "new tabs switch agent focus to the newest automatically so the screenshot "
+    "matches. To pick a tab explicitly, use action `switch_tab` with "
+    "`tab_index` (1-based, same order as `open_tabs`)."
 )
 
 _DEFAULT_TIMEOUT_S = 15.0
@@ -62,6 +69,10 @@ _POST_NAVIGATE_SETTLE_S = 0.3
 # is fully painted; sleeping briefly lets the screenshot capture the
 # expanded state so the LLM can pick the submenu entry on the next turn.
 _POST_HOVER_SETTLE_S = 0.4
+
+# After a click (or other pointer action) that may open target=_blank, wait
+# briefly so SessionManager registers the new target before we snapshot tabs.
+_POST_POINTER_TAB_SETTLE_S = 0.25
 
 # JS helper: locate the centre of the element whose visible text matches `text`.
 # Tries strict equality on interactive elements first, then loose contains
@@ -181,10 +192,15 @@ class BrowserTool(ToolBase):
         async with self._lock:
             try:
                 page = await self._ensure_started()
+                assert self._session is not None
+                ids_before = self._page_target_ids(self._session)
                 resolved: TargetResolved | None = None
+                tab_frag: dict[str, Any] = {}
 
                 if isinstance(validated, NavigateInput):
-                    output = await self._handle_navigate(page, validated)
+                    output, tab_frag = await self._handle_navigate(
+                        page, validated, ids_before=ids_before
+                    )
                 elif isinstance(validated, ScreenshotInput):
                     output = "Captured screenshot."
                 elif isinstance(validated, WaitInput):
@@ -194,22 +210,32 @@ class BrowserTool(ToolBase):
                 elif isinstance(validated, ScrollInput):
                     output = await self._handle_scroll(page, validated)
                 elif isinstance(validated, ClickInput):
-                    output, resolved = await self._handle_click(page, validated)
+                    output, resolved, tab_frag = await self._handle_click(
+                        page, validated, ids_before=ids_before
+                    )
                 elif isinstance(validated, HoverInput):
                     output, resolved = await self._handle_hover(page, validated)
                 elif isinstance(validated, TypeInput):
-                    output, resolved = await self._handle_type(page, validated)
+                    output, resolved, tab_frag = await self._handle_type(
+                        page, validated, ids_before=ids_before
+                    )
                 elif isinstance(validated, ExtractInput):
                     output = await self._handle_extract(page, validated)
+                elif isinstance(validated, SwitchTabInput):
+                    output, tab_frag = await self._handle_switch_tab(validated)
                 elif isinstance(validated, DownloadInput):
-                    output, resolved, download_info = await self._handle_download(
-                        page, validated
+                    output, resolved, download_info, tab_frag = (
+                        await self._handle_download(
+                            page, validated, ids_before=ids_before
+                        )
                     )
+                    page = await self._session.must_get_current_page()
                     base64_image = await self._safe_screenshot(page)
                     details = await self._build_details(
                         page,
                         resolved=resolved,
                         downloads=[download_info] if download_info else None,
+                        **tab_frag,
                     )
                     return ToolResult(
                         output=output,
@@ -222,8 +248,11 @@ class BrowserTool(ToolBase):
                         f"unhandled action: {type(validated).__name__}",
                     )
 
+                page = await self._session.must_get_current_page()
                 base64_image = await self._safe_screenshot(page)
-                details = await self._build_details(page, resolved=resolved)
+                details = await self._build_details(
+                    page, resolved=resolved, **tab_frag
+                )
                 return ToolResult(
                     output=output,
                     base64_image=base64_image,
@@ -275,7 +304,9 @@ class BrowserTool(ToolBase):
 
     # ----- handlers ---------------------------------------------------------
 
-    async def _handle_navigate(self, page: Any, action: NavigateInput) -> str:
+    async def _handle_navigate(
+        self, page: Any, action: NavigateInput, *, ids_before: set[str]
+    ) -> tuple[str, dict[str, Any]]:
         timeout = action.timeout_s or _DEFAULT_TIMEOUT_S
         try:
             await asyncio.wait_for(page.goto(action.url), timeout=timeout)
@@ -290,7 +321,13 @@ class BrowserTool(ToolBase):
                 f"navigation to {action.url!r} failed: {exc}",
             ) from exc
         await asyncio.sleep(_POST_NAVIGATE_SETTLE_S)
-        return f"Navigated to {action.url}"
+        msg = f"Navigated to {action.url}"
+        note, frag = await self._reconcile_tabs_if_needed(
+            self._session, ids_before, "navigate"
+        )
+        if note:
+            msg = f"{msg}\n{note}"
+        return msg, frag
 
     async def _handle_wait(self, action: WaitInput) -> str:
         await asyncio.sleep(action.duration_s)
@@ -318,8 +355,12 @@ class BrowserTool(ToolBase):
         return f"Scrolled {action.direction} by {action.amount}px"
 
     async def _handle_click(
-        self, page: Any, action: ClickInput
-    ) -> tuple[str, TargetResolved]:
+        self,
+        page: Any,
+        action: ClickInput,
+        *,
+        ids_before: set[str],
+    ) -> tuple[str, TargetResolved, dict[str, Any]]:
         x, y, resolved = await self._resolve_locator(
             page,
             target_text=action.target_text,
@@ -329,7 +370,13 @@ class BrowserTool(ToolBase):
         )
         mouse = await page.mouse
         await mouse.click(x=x, y=y)
-        return f"Clicked at ({x}, {y}) by {resolved.by}", resolved
+        msg = f"Clicked at ({x}, {y}) by {resolved.by}"
+        note, frag = await self._reconcile_tabs_if_needed(
+            self._session, ids_before, "click"
+        )
+        if note:
+            msg = f"{msg}\n{note}"
+        return msg, resolved, frag
 
     async def _handle_hover(
         self, page: Any, action: HoverInput
@@ -356,8 +403,13 @@ class BrowserTool(ToolBase):
         return f"Hovered at ({x}, {y}) by {resolved.by}", resolved
 
     async def _handle_type(
-        self, page: Any, action: TypeInput
-    ) -> tuple[str, TargetResolved | None]:
+        self,
+        page: Any,
+        action: TypeInput,
+        *,
+        ids_before: set[str],
+    ) -> tuple[str, TargetResolved | None, dict[str, Any]]:
+        tab_frag: dict[str, Any] = {}
         resolved: TargetResolved | None = None
         if (
             action.target_text is not None
@@ -373,6 +425,11 @@ class BrowserTool(ToolBase):
             )
             mouse = await page.mouse
             await mouse.click(x=x, y=y)
+            note, tab_frag = await self._reconcile_tabs_if_needed(
+                self._session, ids_before, "type (focus click)"
+            )
+        else:
+            note = None
 
         ok = await page.evaluate(_FOCUS_AND_FILL_JS, action.text)
         if str(ok).lower() != "true":
@@ -380,15 +437,22 @@ class BrowserTool(ToolBase):
                 ErrorCode.TARGET_NOT_FOUND,
                 "no editable element is focused; click an input first",
             )
-        return f"Typed {len(action.text)} character(s)", resolved
+        msg = f"Typed {len(action.text)} character(s)"
+        if note:
+            msg = f"{msg}\n{note}"
+        return msg, resolved, tab_frag
 
     async def _handle_extract(self, page: Any, action: ExtractInput) -> str:
         text = await page.evaluate(_PAGE_TEXT_JS, _EXTRACT_MAX_CHARS)
         return f"Page text (first {_EXTRACT_MAX_CHARS} chars):\n{text}"
 
     async def _handle_download(
-        self, page: Any, action: DownloadInput
-    ) -> tuple[str, TargetResolved, DownloadInfo]:
+        self,
+        page: Any,
+        action: DownloadInput,
+        *,
+        ids_before: set[str],
+    ) -> tuple[str, TargetResolved, DownloadInfo | None, dict[str, Any]]:
         x, y, resolved = await self._resolve_locator(
             page,
             target_text=action.target_text,
@@ -404,6 +468,10 @@ class BrowserTool(ToolBase):
         mouse = await page.mouse
         await mouse.click(x=x, y=y)
 
+        tab_note, tab_frag = await self._reconcile_tabs_if_needed(
+            self._session, ids_before, "download"
+        )
+
         timeout = action.timeout_s or _DEFAULT_DOWNLOAD_TIMEOUT_S
         info = await self._await_download(download_dir, before, timeout)
         if info is None:
@@ -411,7 +479,47 @@ class BrowserTool(ToolBase):
                 ErrorCode.TIMEOUT,
                 f"download did not complete within {timeout}s",
             )
-        return f"Downloaded {Path(info.path).name}", resolved, info
+        msg = f"Downloaded {Path(info.path).name}"
+        if tab_note:
+            msg = f"{msg}\n{tab_note}"
+        return msg, resolved, info, tab_frag
+
+    async def _handle_switch_tab(self, action: SwitchTabInput) -> tuple[str, dict[str, Any]]:
+        session = self._session
+        assert session is not None
+        gp = getattr(session, "get_page_targets", None)
+        bus = getattr(session, "event_bus", None)
+        if not callable(gp) or bus is None:
+            raise _BrowserToolError(
+                ErrorCode.TOOL_INTERNAL_ERROR,
+                "switch_tab requires a live BrowserSession with tab support",
+            )
+        targets = gp()
+        n = len(targets)
+        idx = action.tab_index
+        if idx < 1 or idx > n:
+            raise _BrowserToolError(
+                ErrorCode.TARGET_NOT_FOUND,
+                f"switch_tab: tab_index {idx} out of range (open tabs: {n})",
+            )
+        tid = targets[idx - 1].target_id
+        from browser_use.browser.events import SwitchTabEvent
+
+        await bus.dispatch(SwitchTabEvent(target_id=tid))
+        await asyncio.sleep(0.12)
+        targets2 = gp()
+        rows = self._open_tab_rows(session, targets2)
+        frag: dict[str, Any] = {
+            "open_tabs": rows,
+            "tab_count": len(rows),
+            "switched_to_target_id": tid,
+        }
+        tab_block = self._format_open_tabs_text(rows)
+        msg = (
+            f"Switched agent focus to tab [{idx}] "
+            f"(target …{tid[-6:]}).\n{tab_block}"
+        )
+        return msg, frag
 
     async def _await_download(
         self, download_dir: Path, before: set[Path], timeout: float
@@ -476,6 +584,114 @@ class BrowserTool(ToolBase):
         coords = _parse_coords(raw)
         return coords
 
+    # ----- multi-tab (CDP targets) ----------------------------------------
+
+    def _page_target_ids(self, session: Any | None) -> set[str]:
+        if session is None:
+            return set()
+        gp = getattr(session, "get_page_targets", None)
+        if not callable(gp):
+            return set()
+        try:
+            return {t.target_id for t in gp()}
+        except Exception:
+            return set()
+
+    def _open_tab_rows(self, session: Any, targets: list[Any]) -> list[OpenTabRow]:
+        focused = getattr(session, "agent_focus_target_id", None)
+        rows: list[OpenTabRow] = []
+        for i, t in enumerate(targets, start=1):
+            tid = t.target_id
+            rows.append(
+                OpenTabRow(
+                    index=i,
+                    target_id_suffix=tid[-8:],
+                    target_id=tid,
+                    url=getattr(t, "url", "") or "",
+                    title=getattr(t, "title", "") or "",
+                    agent_has_focus=tid == focused,
+                )
+            )
+        return rows
+
+    def _format_open_tabs_text(self, rows: list[OpenTabRow]) -> str:
+        lines = ["Open tabs:"]
+        for r in rows:
+            mark = "*" if r.agent_has_focus else " "
+            u = r.url if len(r.url) <= 100 else f"{r.url[:97]}..."
+            lines.append(
+                f"  [{r.index}]{mark} …{r.target_id_suffix} | {u}"
+            )
+        return "\n".join(lines)
+
+    def _tabs_debug_stderr(self, *, n_tabs: int, focus_suffix: str, n_new: int) -> None:
+        try:
+            print(
+                f"[tabs] count={n_tabs} focus=…{focus_suffix} new_targets={n_new}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception:
+            pass
+
+    async def _reconcile_tabs_if_needed(
+        self,
+        session: Any | None,
+        ids_before: set[str],
+        verb: str,
+    ) -> tuple[str | None, dict[str, Any]]:
+        if session is None:
+            return None, {}
+        gp = getattr(session, "get_page_targets", None)
+        bus = getattr(session, "event_bus", None)
+        dispatch = getattr(bus, "dispatch", None) if bus is not None else None
+        if not callable(gp) or not callable(dispatch):
+            return None, {}
+
+        await asyncio.sleep(_POST_POINTER_TAB_SETTLE_S)
+        try:
+            targets = gp()
+        except Exception:
+            return None, {}
+
+        new_ids = [t.target_id for t in targets if t.target_id not in ids_before]
+        rows = self._open_tab_rows(session, targets)
+        frag: dict[str, Any] = {
+            "open_tabs": rows,
+            "tab_count": len(rows),
+        }
+        if len(rows) <= 1:
+            return None, {}
+
+        focused = getattr(session, "agent_focus_target_id", None) or ""
+        self._tabs_debug_stderr(
+            n_tabs=len(rows),
+            focus_suffix=focused[-6:] if focused else "?",
+            n_new=len(new_ids),
+        )
+
+        note_lines: list[str] = []
+        if new_ids:
+            from browser_use.browser.events import SwitchTabEvent
+
+            newest = new_ids[-1]
+            await dispatch(SwitchTabEvent(target_id=newest))
+            frag["switched_to_target_id"] = newest
+            note_lines.append(
+                f"New tab(s) after {verb} ({len(new_ids)} opened). "
+                f"Agent focus was switched to the newest tab "
+                f"(target …{newest[-6:]}) so this screenshot matches it."
+            )
+        else:
+            note_lines.append(
+                f"Multiple tabs open ({len(rows)}) after {verb}; "
+                f"agent focus unchanged. Tab marked * is what tools/screenshots "
+                f"use. To switch, call action \"switch_tab\" with tab_index."
+            )
+
+        tab_block = self._format_open_tabs_text(rows)
+        return "\n".join(note_lines + [tab_block]), frag
+
     # ----- session lifecycle -----------------------------------------------
 
     async def _ensure_started(self) -> Any:
@@ -522,6 +738,9 @@ class BrowserTool(ToolBase):
         error_code: ErrorCode | None = None,
         retryable: bool | None = None,
         downloads: list[DownloadInfo] | None = None,
+        open_tabs: list[OpenTabRow] | None = None,
+        tab_count: int | None = None,
+        switched_to_target_id: str | None = None,
     ) -> BrowserToolDetails:
         url: str | None = None
         title: str | None = None
@@ -534,10 +753,15 @@ class BrowserTool(ToolBase):
                 title = await page.get_title()
             except Exception:
                 title = None
+        ot = list(open_tabs) if open_tabs else []
+        tc = tab_count if tab_count is not None else (len(ot) if ot else None)
         return BrowserToolDetails(
             url=url,
             title=title,
             target_resolved=resolved,
+            open_tabs=ot,
+            tab_count=tc,
+            switched_to_target_id=switched_to_target_id,
             error_code=error_code.value if error_code else None,
             retryable=retryable,
             downloads=list(downloads) if downloads else [],

@@ -119,10 +119,36 @@ class FakePage:
         return ""
 
 
+class FakePageTarget:
+    """Minimal stand-in for browser_use Target (page tab)."""
+
+    def __init__(self, target_id: str, url: str, title: str = "T") -> None:
+        self.target_id = target_id
+        self.url = url
+        self.title = title
+
+
+class _FakeEventBus:
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    async def dispatch(self, *args: Any, **kwargs: Any) -> None:
+        self._session.dispatch_calls.append((args, kwargs))
+
+
 class FakeSession:
     def __init__(self, page: FakePage) -> None:
         self._page = page
         self.killed = False
+        self.agent_focus_target_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        self._targets: list[FakePageTarget] = [
+            FakePageTarget(self.agent_focus_target_id, page._url, page._title),
+        ]
+        self.dispatch_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.event_bus = _FakeEventBus(self)
+
+    def get_page_targets(self) -> list[FakePageTarget]:
+        return list(self._targets)
 
     async def must_get_current_page(self) -> FakePage:
         return self._page
@@ -464,6 +490,26 @@ async def test_invalid_input_returns_error_result() -> None:
     assert result.is_error
     assert result.details["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
     assert page.goto_calls == []
+
+
+@pytest.mark.asyncio
+async def test_switch_tab_dispatches_event_and_lists_tabs() -> None:
+    page = FakePage()
+    tool = _make_tool(page)
+    sess = tool._session
+    assert isinstance(sess, FakeSession)
+    tid_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    sess._targets.append(
+        FakePageTarget(tid_b, "https://other.example/", "Other")
+    )
+
+    result = await tool({"action": "switch_tab", "tab_index": 2})
+    assert not result.is_error
+    assert len(sess.dispatch_calls) == 1
+    assert result.details["tab_count"] == 2
+    assert len(result.details["open_tabs"]) == 2
+    assert result.details["switched_to_target_id"] == tid_b
+    assert "Switched agent focus" in result.output
 
 
 @pytest.mark.asyncio

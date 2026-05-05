@@ -190,6 +190,17 @@ class ScreenshotInput(_Base):
     action: Literal["screenshot"]
 
 
+class SwitchTabInput(_Base):
+    action: Literal["switch_tab"]
+    tab_index: int = Field(
+        ge=1,
+        description=(
+            "1-based index of the tab to focus (same ordering as "
+            "`details.open_tabs` / browser session get_page_targets)."
+        ),
+    )
+
+
 class ExtractInput(_Base):
     action: Literal["extract"]
     instruction: str = Field(
@@ -227,6 +238,7 @@ BrowserToolInput = Annotated[
     | ScrollInput
     | WaitInput
     | ScreenshotInput
+    | SwitchTabInput
     | ExtractInput
     | DownloadInput,
     Field(discriminator="action"),
@@ -242,6 +254,21 @@ class TargetResolved(BaseModel):
 
     by: Literal["text", "hint", "coordinate"]
     value: str = Field(description="String form of the locator, e.g. '812,124' for coordinates.")
+
+
+class OpenTabRow(BaseModel):
+    """One row in `BrowserToolDetails.open_tabs` (machine-readable for the LLM)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    index: int = Field(description="1-based index; matches `switch_tab.tab_index`.")
+    target_id_suffix: str = Field(description="Last 8 chars of CDP target id (debug).")
+    target_id: str
+    url: str
+    title: str = ""
+    agent_has_focus: bool = Field(
+        description="Whether this tab is the active target for tool/screenshot."
+    )
 
 
 class DownloadInfo(BaseModel):
@@ -262,6 +289,15 @@ class BrowserToolDetails(BaseModel):
     title: str | None = None
     downloads: list[DownloadInfo] = Field(default_factory=list)
     target_resolved: TargetResolved | None = None
+    open_tabs: list[OpenTabRow] = Field(
+        default_factory=list,
+        description="All page tabs after this action when tab_count > 1.",
+    )
+    tab_count: int | None = None
+    switched_to_target_id: str | None = Field(
+        default=None,
+        description="If agent focus was switched, the full CDP target id.",
+    )
     error_code: str | None = None
     retryable: bool | None = None
     attempt: int | None = None
@@ -290,9 +326,11 @@ __all__ = [
     "ExtractInput",
     "HoverInput",
     "NavigateInput",
+    "OpenTabRow",
     "PressInput",
     "ScreenshotInput",
     "ScrollInput",
+    "SwitchTabInput",
     "TargetResolved",
     "TypeInput",
     "WaitInput",

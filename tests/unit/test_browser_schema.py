@@ -112,6 +112,17 @@ def test_hover_with_string_coordinate_coerces() -> None:
     assert parsed.coordinate == (361, 30)
 
 
+def test_switch_tab_ok() -> None:
+    parsed = parse_browser_tool_input({"action": "switch_tab", "tab_index": 2})
+    assert parsed.action == "switch_tab"
+    assert parsed.tab_index == 2
+
+
+def test_switch_tab_index_low_fails() -> None:
+    with pytest.raises(ValidationError):
+        parse_browser_tool_input({"action": "switch_tab", "tab_index": 0})
+
+
 def test_type_can_omit_locator() -> None:
     parsed = parse_browser_tool_input({"action": "type", "text": "hello"})
     assert parsed.action == "type"
@@ -203,6 +214,7 @@ def test_json_schema_exports() -> None:
         "type",
         "press",
         "scroll",
+        "switch_tab",
         "wait",
         "screenshot",
         "extract",
