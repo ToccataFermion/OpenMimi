@@ -8,7 +8,19 @@ from __future__ import annotations
 from typing import Any
 
 from .base import ToolBase
+from .browser_schema import (
+    BROWSER_TOOL_INPUT_ADAPTER,
+    browser_tool_input_json_schema,
+)
 from .result import ToolResult
+
+_TOOL_DESCRIPTION = (
+    "Operate a Chromium browser with mixed locator strategies "
+    "(target_text / target_hint / coordinate; coordinate is mutually exclusive "
+    "with the semantic targets). Every call returns a fresh screenshot plus the "
+    "current URL/title in `details`. Prefer `target_text`/`target_hint`; fall "
+    "back to `coordinate` only when the element has no stable text."
+)
 
 
 class BrowserTool(ToolBase):
@@ -25,20 +37,17 @@ class BrowserTool(ToolBase):
         self._session: Any = None
 
     def to_params(self) -> dict[str, Any]:
-        # Final input_schema is defined in the next task (Pydantic model).
         return {
             "name": self.name,
-            "description": (
-                "Operate a Chromium browser with mixed locator strategies "
-                "(target_text / target_hint / coordinate). Each call returns a "
-                "fresh screenshot and the current URL."
-            ),
-            "input_schema": {"type": "object"},
+            "description": _TOOL_DESCRIPTION,
+            "input_schema": browser_tool_input_json_schema(),
         }
 
     async def __call__(self, tool_input: dict[str, Any]) -> ToolResult:
+        validated = BROWSER_TOOL_INPUT_ADAPTER.validate_python(tool_input)
+        # M1: dispatch by action type; concrete handlers wrap browser-use here.
         raise NotImplementedError(
-            "M1: implement actions navigate/click/type/press/scroll/wait/screenshot/extract/download"
+            f"M1: implement handler for action={validated.action!r}"
         )
 
     async def close(self) -> None:
