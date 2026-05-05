@@ -450,6 +450,35 @@ class BrowserTool(ToolBase):
         await mouse.scroll(x=cx, y=cy, delta_x=delta_x, delta_y=delta_y)
         return f"Scrolled {action.direction} by {action.amount}px"
 
+    async def _safe_mouse_click(
+        self,
+        mouse: Any,
+        x: int,
+        y: int,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        """Click with a timeout. Returns True on success, False on timeout.
+
+        The CDP ``Input.dispatchMouseEvent`` response can stall indefinitely
+        when the click triggers ``window.open`` or similar cross-target side
+        effects (observed on xft.cmbchina.com). The mousedown is almost always
+        already dispatched, so we swallow the timeout and continue rather than
+        freezing the agent until the outer tool timeout fires.
+        """
+        try:
+            await asyncio.wait_for(mouse.click(x=x, y=y), timeout=timeout)
+            return True
+        except TimeoutError:
+            # Try to release the button so the next operation doesn't see a
+            # stuck mousedown state.
+            if hasattr(mouse, "up"):
+                try:
+                    await asyncio.wait_for(mouse.up(), timeout=1.0)
+                except Exception:
+                    pass
+            return False
+
     async def _handle_click(
         self,
         page: Any,
@@ -470,9 +499,11 @@ class BrowserTool(ToolBase):
         mouse = await page.mouse
         _browser_trace("click:after_page_mouse")
         _browser_trace("click:before_mouse_click")
-        await mouse.click(x=x, y=y)
-        _browser_trace("click:after_mouse_click")
+        ok = await self._safe_mouse_click(mouse, x, y)
+        _browser_trace(f"click:after_mouse_click ok={ok}")
         msg = f"Clicked at ({x}, {y}) by {resolved.by}"
+        if not ok:
+            msg = f"{msg} (mouse dispatch timed out but likely succeeded)"
         note, frag = await self._reconcile_tabs_if_needed(
             self._session, ids_before, "click"
         )
@@ -529,7 +560,7 @@ class BrowserTool(ToolBase):
             )
             click_x, click_y = x, y
             mouse = await page.mouse
-            await mouse.click(x=x, y=y)
+            await self._safe_mouse_click(mouse, x, y)
             note, tab_frag = await self._reconcile_tabs_if_needed(
                 self._session, ids_before, "type (focus click)"
             )
@@ -573,7 +604,7 @@ class BrowserTool(ToolBase):
         before = _snapshot_files(download_dir)
 
         mouse = await page.mouse
-        await mouse.click(x=x, y=y)
+        await self._safe_mouse_click(mouse, x, y)
 
         tab_note, tab_frag = await self._reconcile_tabs_if_needed(
             self._session, ids_before, "download"
@@ -916,6 +947,11 @@ async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
         params={"targetId": target_id}
     )
     _browser_trace("focus:after_activate_target")
+
+    # Keep the session's own focus tracking in sync so open_tabs reports
+    # the correct agent_has_focus flag.
+    if hasattr(session, "agent_focus_target_id"):
+        session.agent_focus_target_id = target_id
 
     dw = getattr(session, "_dom_watchdog", None)
     if dw is not None:
