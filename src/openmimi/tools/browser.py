@@ -275,6 +275,7 @@ class BrowserTool(ToolBase):
                             page, validated, ids_before=ids_before
                         )
                     )
+                    await _unstick_debugger_paused_pages(self._session)
                     page = await self._session.must_get_current_page()
                     base64_image = await self._safe_screenshot(page)
                     details = await self._build_details(
@@ -294,6 +295,7 @@ class BrowserTool(ToolBase):
                         f"unhandled action: {type(validated).__name__}",
                     )
 
+                await _unstick_debugger_paused_pages(self._session)
                 page = await self._session.must_get_current_page()
                 base64_image = await self._safe_screenshot(page)
                 details = await self._build_details(
@@ -701,6 +703,8 @@ class BrowserTool(ToolBase):
         except Exception:
             return None, {}
 
+        await _unstick_debugger_paused_pages(session)
+
         new_ids = [t.target_id for t in targets if t.target_id not in ids_before]
         rows = self._open_tab_rows(session, targets)
         frag: dict[str, Any] = {
@@ -854,6 +858,35 @@ async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
         vh = profile.viewport.height
         dpr = profile.device_scale_factor or 1.0
         await session._cdp_set_viewport(vw, vh, dpr, target_id=target_id)
+
+
+async def _unstick_debugger_paused_pages(session: Any) -> None:
+    """Best-effort: resume tabs stuck in the Chrome 'paused in debugger' overlay.
+
+    Some sites call ``debugger`` or hit a breakpoint on the opener tab when opening
+    a login window. That dims the page and shows a yellow banner (often mojibake
+    under non-UTF8 consoles). CDP can stay blocked until the pause is cleared.
+    """
+    gp = getattr(session, "get_page_targets", None)
+    gc = getattr(session, "get_or_create_cdp_session", None)
+    if not callable(gp) or not callable(gc):
+        return
+    try:
+        targets = gp()
+    except Exception:
+        return
+    for t in targets:
+        try:
+            cdp_sess = await gc(target_id=t.target_id, focus=False)
+            sid = cdp_sess.session_id
+            client = cdp_sess.cdp_client
+            await client.send.Runtime.runIfWaitingForDebugger(session_id=sid)
+            try:
+                await client.send.Debugger.resume(session_id=sid)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 def _parse_coords(raw: Any) -> tuple[int, int] | None:
