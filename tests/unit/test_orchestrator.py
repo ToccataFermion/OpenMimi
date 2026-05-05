@@ -172,3 +172,59 @@ def test_from_env_uses_base_url_and_model_overrides(
     assert captured["base_url"] == "https://proxy.example.com/v1"
     assert captured["model"] == "qwen-x"
     assert captured["enable_prompt_caching"] is False
+    assert captured["request_timeout_s"] == 90.0
+    assert callable(captured["progress_logger"])
+
+
+def test_from_env_reads_llm_timeout_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENMIMI_LLM_TIMEOUT_S", "12.5")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_anthropic_client(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", _fake_anthropic_client
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    Orchestrator.from_env(config=cfg)
+
+    assert captured["request_timeout_s"] == 12.5
+
+
+def test_from_env_falls_back_when_timeout_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENMIMI_LLM_TIMEOUT_S", "not-a-number")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_anthropic_client(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", _fake_anthropic_client
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    Orchestrator.from_env(config=cfg)
+
+    assert captured["request_timeout_s"] == 90.0

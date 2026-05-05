@@ -9,6 +9,7 @@ implementations.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from .audit import JsonlAuditLogger
@@ -19,6 +20,8 @@ from .llm.base import LLMClient
 from .loop import sampling_loop
 from .tools import BrowserTool, ToolCollection
 from .utils.ids import new_session_id
+
+_DEFAULT_LLM_TIMEOUT_S = 90.0
 
 
 class Orchestrator:
@@ -44,14 +47,20 @@ class Orchestrator:
         """Build an Orchestrator from `AppConfig` + env vars.
 
         Recognised env vars:
-          - <cfg.llm.api_key_env>   (default ANTHROPIC_API_KEY) - required
-          - ANTHROPIC_BASE_URL      - optional, points at a compatible proxy
-          - ANTHROPIC_MODEL         - optional, overrides cfg.llm.model
+          - <cfg.llm.api_key_env>     (default ANTHROPIC_API_KEY) - required
+          - ANTHROPIC_BASE_URL        - optional, points at a compatible proxy
+          - ANTHROPIC_MODEL           - optional, overrides cfg.llm.model
+          - OPENMIMI_LLM_TIMEOUT_S    - optional, per-LLM-request timeout
+                                        in seconds (default 90)
 
         When ANTHROPIC_BASE_URL is set we conservatively disable prompt
         caching, because most Anthropic-compatible third-party endpoints
         (OpenAI-compat gateways, Aliyun MaaS, etc.) don't recognise the
         `cache_control` field and may reject the request.
+
+        A stderr progress logger is wired by default so a slow upstream
+        (or a hung request) is visible from the terminal instead of
+        manifesting as a frozen process.
         """
         cfg = config or load_config()
         api_key = os.environ.get(cfg.llm.api_key_env)
@@ -64,12 +73,17 @@ class Orchestrator:
         base_url = os.environ.get("ANTHROPIC_BASE_URL") or None
         model = os.environ.get("ANTHROPIC_MODEL") or cfg.llm.model
         enable_caching = base_url is None
+        timeout_s = _coerce_positive_float(
+            os.environ.get("OPENMIMI_LLM_TIMEOUT_S"), _DEFAULT_LLM_TIMEOUT_S
+        )
 
         llm = AnthropicClient(
             api_key=api_key,
             model=model,
             base_url=base_url,
             enable_prompt_caching=enable_caching,
+            request_timeout_s=timeout_s,
+            progress_logger=_stderr_progress_logger,
         )
 
         tools = ToolCollection()
@@ -113,6 +127,25 @@ class Orchestrator:
 
     async def close(self) -> None:
         await self.tools.close_all()
+
+
+def _stderr_progress_logger(message: str) -> None:
+    """Best-effort stderr progress sink for AnthropicClient.
+
+    Wrapped in try/except inside `_log_progress`, so a closed/broken stderr
+    can never break the LLM call path.
+    """
+    print(message, file=sys.stderr, flush=True)
+
+
+def _coerce_positive_float(raw: str | None, fallback: float) -> float:
+    if raw is None or raw.strip() == "":
+        return fallback
+    try:
+        v = float(raw)
+    except ValueError:
+        return fallback
+    return v if v > 0 else fallback
 
 
 def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:

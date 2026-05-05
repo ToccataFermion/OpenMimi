@@ -11,6 +11,8 @@ high-leverage spots:
 """
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 
@@ -23,11 +25,20 @@ class _AsyncClientLike(Protocol):
     def messages(self) -> _AsyncMessagesLike: ...
 
 
+_DEFAULT_REQUEST_TIMEOUT_S = 90.0
+
+
 class AnthropicClient:
     """LLMClient backed by anthropic.AsyncAnthropic.
 
     The optional `client` argument lets tests inject a stub that records calls
     and returns a canned Message-shaped object without touching the network.
+
+    `request_timeout_s` overrides the SDK default (600s) with a value that is
+    sane for an interactive agent. `progress_logger`, if set, receives one
+    line of human-readable status before each request and one after the
+    response (or failure), so a hung Aliyun MaaS request is observable from
+    the CLI instead of looking like a frozen process.
     """
 
     def __init__(
@@ -37,16 +48,24 @@ class AnthropicClient:
         model: str,
         base_url: str | None = None,
         enable_prompt_caching: bool = True,
+        request_timeout_s: float = _DEFAULT_REQUEST_TIMEOUT_S,
+        progress_logger: Callable[[str], None] | None = None,
         client: _AsyncClientLike | None = None,
     ) -> None:
         self._model = model
         self._enable_caching = enable_prompt_caching
+        self._request_timeout_s = request_timeout_s
+        self._progress_logger = progress_logger
+        self._call_index = 0
         if client is not None:
             self._client = client
         else:
             from anthropic import AsyncAnthropic
 
-            kwargs: dict[str, Any] = {"api_key": api_key}
+            kwargs: dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": request_timeout_s,
+            }
             if base_url:
                 kwargs["base_url"] = base_url
             self._client = AsyncAnthropic(**kwargs)
@@ -62,14 +81,43 @@ class AnthropicClient:
         system_param = self._build_system(system)
         tools_param = self._build_tools(tools)
 
-        result = await self._client.messages.create(
-            model=self._model,
-            system=system_param,
-            messages=messages,
-            tools=tools_param,
-            max_tokens=max_tokens,
+        self._call_index += 1
+        idx = self._call_index
+        self._log_progress(
+            f"[llm] turn {idx}: requesting "
+            f"(timeout={self._request_timeout_s:.0f}s)..."
         )
-        return _to_dict(result)
+        t0 = time.monotonic()
+        try:
+            result = await self._client.messages.create(
+                model=self._model,
+                system=system_param,
+                messages=messages,
+                tools=tools_param,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            elapsed = time.monotonic() - t0
+            self._log_progress(
+                f"[llm] turn {idx}: failed after {elapsed:.1f}s: "
+                f"{exc.__class__.__name__}: {exc}"
+            )
+            raise
+        elapsed = time.monotonic() - t0
+        as_dict = _to_dict(result)
+        stop = as_dict.get("stop_reason") or "?"
+        self._log_progress(
+            f"[llm] turn {idx}: response in {elapsed:.1f}s (stop={stop})"
+        )
+        return as_dict
+
+    def _log_progress(self, message: str) -> None:
+        if self._progress_logger is None:
+            return
+        try:
+            self._progress_logger(message)
+        except Exception:
+            pass
 
     def _build_system(self, system: str) -> Any:
         if not self._enable_caching or not system:
