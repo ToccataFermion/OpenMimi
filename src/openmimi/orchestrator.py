@@ -125,6 +125,33 @@ class Orchestrator:
             "final_text": _extract_last_assistant_text(messages),
         }
 
+    async def run_chat_turn(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        session_id: str,
+        user_content: str,
+    ) -> str:
+        """Append one user message and run the tool loop until the assistant stops.
+
+        Unlike `run_task`, this does **not** close tools — the same BrowserTool
+        session and message history stay alive across turns so follow-up
+        instructions see the prior page state and conversation context.
+
+        All tool audit rows for every turn share the same ``session_id``.
+        """
+        messages.append({"role": "user", "content": user_content})
+        await sampling_loop(
+            messages=messages,
+            tools=self.tools,
+            llm=self.llm,
+            session_id=session_id,
+            audit=self.audit,
+            max_turns=self.config.max_turns,
+            only_n_most_recent_images=self.config.only_n_most_recent_images,
+        )
+        return _extract_last_assistant_text(messages)
+
     async def close(self) -> None:
         await self.tools.close_all()
 

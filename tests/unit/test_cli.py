@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -23,6 +24,61 @@ def test_run_without_api_key_exits_with_error(
     assert "ANTHROPIC_API_KEY" in result.stderr or "ANTHROPIC_API_KEY" in (
         result.output or ""
     )
+
+
+def test_chat_without_api_key_exits_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("openmimi.cli._maybe_load_dotenv", lambda: None)
+
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 2
+    assert "ANTHROPIC_API_KEY" in (result.stderr or "") or "ANTHROPIC_API_KEY" in (
+        result.output or ""
+    )
+
+
+def test_chat_one_turn_then_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.setattr("openmimi.cli._maybe_load_dotenv", lambda: None)
+
+    class _FakeOrch:
+        def __init__(self) -> None:
+            self.turns: list[dict[str, Any]] = []
+            self.closed = False
+
+        async def run_chat_turn(self, **kwargs: Any) -> str:
+            self.turns.append(kwargs)
+            return "assistant reply"
+
+        async def close(self) -> None:
+            self.closed = True
+
+    fake = _FakeOrch()
+
+    def _fake_from_env(_cls: object, **_kw: object) -> _FakeOrch:
+        return fake
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.Orchestrator.from_env",
+        classmethod(_fake_from_env),
+    )
+
+    _lines = iter(["hello there", "/exit"])
+
+    monkeypatch.setattr("openmimi.cli._read_chat_line", lambda _p: next(_lines))
+
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert len(fake.turns) == 1
+    assert fake.turns[0]["user_content"] == "hello there"
+    assert len(fake.turns[0]["session_id"]) == 32
+    assert fake.closed is True
+    assert "assistant reply" in result.output
 
 
 def test_replay_missing_session_exits_one(

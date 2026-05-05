@@ -203,6 +203,47 @@ def test_from_env_reads_llm_timeout_override(
     assert captured["request_timeout_s"] == 12.5
 
 
+@pytest.mark.asyncio
+async def test_run_chat_turn_keeps_tools_open_across_turns(
+    tmp_path: Path,
+) -> None:
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "R1"}],
+                "stop_reason": "end_turn",
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "R2"}],
+                "stop_reason": "end_turn",
+            },
+        ]
+    )
+    orch, tool = _make_orch(tmp_path, llm)
+    messages: list[dict[str, Any]] = []
+
+    t1 = await orch.run_chat_turn(
+        messages=messages, session_id="s-chat", user_content="first"
+    )
+    t2 = await orch.run_chat_turn(
+        messages=messages, session_id="s-chat", user_content="second"
+    )
+
+    assert t1 == "R1"
+    assert t2 == "R2"
+    assert tool.closed is False
+    assert len(messages) == 4
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "first"
+    assert messages[2]["role"] == "user"
+    assert messages[2]["content"] == "second"
+
+    await orch.close()
+    assert tool.closed is True
+
+
 def test_from_env_falls_back_when_timeout_invalid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

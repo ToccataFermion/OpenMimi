@@ -87,6 +87,66 @@ def run(
     typer.echo(final)
 
 
+def _read_chat_line(prompt: str) -> str:
+    """Read one line of user input (separate for tests to monkeypatch)."""
+    return input(prompt)
+
+
+@app.command()
+def chat() -> None:
+    """Multi-turn REPL with a single browser session and shared context."""
+    _maybe_load_dotenv()
+    from .orchestrator import Orchestrator
+    from .utils.ids import new_session_id
+
+    try:
+        orch = Orchestrator.from_env()
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def _runner() -> None:
+        session_id = new_session_id()
+        messages: list[dict[str, Any]] = []
+        typer.echo(
+            f"多轮对话（同一浏览器与 session，审计写入同一 jsonl）\n"
+            f"session={session_id}\n"
+            f"退出：/exit、/quit 或 Ctrl+C（会关闭浏览器）\n"
+        )
+        try:
+            while True:
+                try:
+                    raw = await asyncio.to_thread(_read_chat_line, "> ")
+                except EOFError:
+                    break
+                line = raw.strip()
+                if not line:
+                    continue
+                lower = line.lower()
+                if lower in ("/exit", "/quit", "exit", "quit"):
+                    break
+                try:
+                    reply = await orch.run_chat_turn(
+                        messages=messages,
+                        session_id=session_id,
+                        user_content=line,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    typer.echo(f"\n[error] {exc}", err=True)
+                    continue
+                typer.echo(f"\n{reply}\n")
+        finally:
+            await orch.close()
+
+    try:
+        asyncio.run(_runner())
+    except KeyboardInterrupt:
+        typer.echo("\ninterrupted", err=True)
+        raise typer.Exit(code=130) from None
+
+
 @app.command()
 def replay(session_id: str) -> None:
     """Replay actions and screenshots for a previous session."""
