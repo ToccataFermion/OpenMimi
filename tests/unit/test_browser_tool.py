@@ -110,6 +110,8 @@ class FakePage:
             if r is None:
                 return "null"
             return json.dumps(r)
+        if "elementFromPoint" in js:  # _HOVER_DISPATCH_JS
+            return "true"
         if "isContentEditable" in js:  # _FOCUS_AND_FILL_JS
             return self._focus_fill_result
         if "innerText" in js:  # _PAGE_TEXT_JS
@@ -306,6 +308,23 @@ async def test_hover_with_coordinate() -> None:
         "by": "coordinate",
         "value": "120,240",
     }
+
+
+@pytest.mark.asyncio
+async def test_hover_dispatches_js_event_chain() -> None:
+    page = FakePage()
+    tool = _make_tool(page)
+    await tool({"action": "hover", "coordinate": [361, 30]})
+    dispatch_calls = [
+        (js, args)
+        for js, args in page.evaluate_calls
+        if "elementFromPoint" in js
+    ]
+    assert len(dispatch_calls) == 1
+    js, args = dispatch_calls[0]
+    assert args == (361, 30)
+    for ev in ("mouseover", "mouseenter", "pointerover", "pointerenter"):
+        assert ev in js
 
 
 @pytest.mark.asyncio

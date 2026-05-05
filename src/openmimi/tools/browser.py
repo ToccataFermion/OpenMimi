@@ -102,6 +102,21 @@ _PAGE_TEXT_JS = """(maxChars) => {
 }
 """
 
+_HOVER_DISPATCH_JS = """(x, y) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return false;
+    const make = (type) => new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, button: 0
+    });
+    el.dispatchEvent(make('pointerover'));
+    el.dispatchEvent(make('mouseover'));
+    el.dispatchEvent(make('pointerenter'));
+    el.dispatchEvent(make('mouseenter'));
+    return true;
+}
+"""
+
 _FOCUS_AND_FILL_JS = """(value) => {
     const el = document.activeElement;
     if (!el) return false;
@@ -328,6 +343,15 @@ class BrowserTool(ToolBase):
         )
         mouse = await page.mouse
         await mouse.move(x, y)
+        # CDP mouse.move drives the CSS :hover state but does not always
+        # trigger JS mouseenter/mouseover listeners (many sites build
+        # hover-to-expand menus on top of those events). Dispatching the
+        # canonical hover event chain on the element under the pointer
+        # covers the JS path; CSS :hover is already covered by the move.
+        try:
+            await page.evaluate(_HOVER_DISPATCH_JS, x, y)
+        except Exception:
+            pass
         await asyncio.sleep(_POST_HOVER_SETTLE_S)
         return f"Hovered at ({x}, {y}) by {resolved.by}", resolved
 
