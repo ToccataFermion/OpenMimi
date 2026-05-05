@@ -57,7 +57,10 @@ class _LocatorMixin(BaseModel):
     )
     target_hint: str | None = Field(
         default=None,
-        description="Natural language hint, e.g. 'gear icon top right'. Used when text is unavailable.",
+        description=(
+            "Natural language hint, e.g. 'gear icon top right'. "
+            "Used when text is unavailable."
+        ),
     )
     coordinate: Coordinate | None = None
 
