@@ -35,6 +35,7 @@ class AnthropicClient:
         *,
         api_key: str | None = None,
         model: str,
+        base_url: str | None = None,
         enable_prompt_caching: bool = True,
         client: _AsyncClientLike | None = None,
     ) -> None:
@@ -45,7 +46,10 @@ class AnthropicClient:
         else:
             from anthropic import AsyncAnthropic
 
-            self._client = AsyncAnthropic(api_key=api_key)
+            kwargs: dict[str, Any] = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            self._client = AsyncAnthropic(**kwargs)
 
     async def create(
         self,

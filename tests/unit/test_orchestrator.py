@@ -138,3 +138,37 @@ def test_from_env_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError) as exc:
         Orchestrator.from_env()
     assert "ANTHROPIC_API_KEY" in str(exc.value)
+
+
+def test_from_env_uses_base_url_and_model_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com/v1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "qwen-x")
+
+    captured: dict[str, Any] = {}
+
+    def _fake_anthropic_client(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+
+        class _Stub:
+            pass
+
+        return _Stub()
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", _fake_anthropic_client
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    Orchestrator.from_env(config=cfg)
+
+    assert captured["api_key"] == "sk-test"
+    assert captured["base_url"] == "https://proxy.example.com/v1"
+    assert captured["model"] == "qwen-x"
+    assert captured["enable_prompt_caching"] is False

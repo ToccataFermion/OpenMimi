@@ -41,7 +41,18 @@ class Orchestrator:
     def from_env(
         cls, *, config: AppConfig | None = None
     ) -> Orchestrator:
-        """Build an Orchestrator from `AppConfig` + the configured env var."""
+        """Build an Orchestrator from `AppConfig` + env vars.
+
+        Recognised env vars:
+          - <cfg.llm.api_key_env>   (default ANTHROPIC_API_KEY) - required
+          - ANTHROPIC_BASE_URL      - optional, points at a compatible proxy
+          - ANTHROPIC_MODEL         - optional, overrides cfg.llm.model
+
+        When ANTHROPIC_BASE_URL is set we conservatively disable prompt
+        caching, because most Anthropic-compatible third-party endpoints
+        (OpenAI-compat gateways, Aliyun MaaS, etc.) don't recognise the
+        `cache_control` field and may reject the request.
+        """
         cfg = config or load_config()
         api_key = os.environ.get(cfg.llm.api_key_env)
         if not api_key:
@@ -50,7 +61,16 @@ class Orchestrator:
                 "set it in .env or your shell before running"
             )
 
-        llm = AnthropicClient(api_key=api_key, model=cfg.llm.model)
+        base_url = os.environ.get("ANTHROPIC_BASE_URL") or None
+        model = os.environ.get("ANTHROPIC_MODEL") or cfg.llm.model
+        enable_caching = base_url is None
+
+        llm = AnthropicClient(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            enable_prompt_caching=enable_caching,
+        )
 
         tools = ToolCollection()
         tools.register(
