@@ -66,7 +66,7 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 _RESULT_SUMMARY_MAX_CHARS = 500
 _OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
-_DEFAULT_TOOL_TIMEOUT_S = 300.0
+_DEFAULT_TOOL_TIMEOUT_S = 5.0
 
 
 def _tool_run_timeout_seconds() -> float | None:
@@ -76,7 +76,7 @@ def _tool_run_timeout_seconds() -> float | None:
     independent from Anthropic's HTTP timeout (OPENMIMI_LLM_TIMEOUT_S).
     Set OPENMIMI_TOOL_TIMEOUT_S to ``0`` to disable (not recommended).
     """
-    raw = os.environ.get("OPENMIMI_TOOL_TIMEOUT_S", "300").strip().lower()
+    raw = os.environ.get("OPENMIMI_TOOL_TIMEOUT_S", "5").strip().lower()
     if raw in ("", "0", "none", "off", "inf", "infinity"):
         return None
     try:
