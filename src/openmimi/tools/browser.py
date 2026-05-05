@@ -49,6 +49,12 @@ _DOWNLOAD_POLL_INTERVAL_S = 0.25
 _PARTIAL_SUFFIXES = (".crdownload", ".tmp", ".part", ".partial")
 _EXTRACT_MAX_CHARS = 4000
 
+# After page.goto() returns the CDP frame can still be in the middle of
+# attaching/painting; an immediate Page.captureScreenshot occasionally
+# fails on a half-attached target. Waiting ~0.3s lets the target settle
+# without slowing the loop perceptibly.
+_POST_NAVIGATE_SETTLE_S = 0.3
+
 # JS helper: locate the centre of the element whose visible text matches `text`.
 # Tries strict equality on interactive elements first, then loose contains
 # matches, then any element. Returns null if nothing matches.
@@ -258,6 +264,7 @@ class BrowserTool(ToolBase):
                 ErrorCode.NAVIGATION_ERROR,
                 f"navigation to {action.url!r} failed: {exc}",
             ) from exc
+        await asyncio.sleep(_POST_NAVIGATE_SETTLE_S)
         return f"Navigated to {action.url}"
 
     async def _handle_wait(self, action: WaitInput) -> str:

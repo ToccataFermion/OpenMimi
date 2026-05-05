@@ -3,13 +3,63 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import warnings
 from pathlib import Path
+from typing import Any
 
 import typer
 
 from .config import load_config
 
 app = typer.Typer(help="OpenMimi - Local Windows AI Agent.")
+
+
+def _polish_console_io() -> None:
+    """Force UTF-8 stdout/stderr and silence noisy Windows asyncio teardown.
+
+    PowerShell/cmd default codepages (cp936, cp1252, ...) mangle non-ASCII
+    output, including the assistant's Chinese reply. We reconfigure both
+    streams to UTF-8 with backslashreplace so unicode characters survive.
+
+    On Windows + Python 3.11 + browser_use 0.12, killing the BrowserSession
+    leaves asyncio `_ProactorBasePipeTransport` instances to be GC'd,
+    which triggers `unclosed transport` / `I/O operation on closed pipe`
+    messages from `__del__`. These are cosmetic; we suppress them so the
+    agent's final answer is the last thing the user sees on screen.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except Exception:
+                pass
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*unclosed transport.*",
+        category=ResourceWarning,
+    )
+
+    _orig_unraisable = sys.unraisablehook
+
+    def _quiet_proactor_unraisable(unraisable: Any) -> None:
+        exc = unraisable.exc_value
+        msg = str(exc) if exc is not None else ""
+        if isinstance(exc, ValueError) and "closed pipe" in msg:
+            return
+        if isinstance(exc, ResourceWarning) and "unclosed transport" in msg:
+            return
+        _orig_unraisable(unraisable)
+
+    sys.unraisablehook = _quiet_proactor_unraisable
+
+
+@app.callback()
+def _root_callback() -> None:
+    """Pre-command setup that runs before every subcommand."""
+    _polish_console_io()
 
 
 @app.command()
