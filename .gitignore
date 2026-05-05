@@ -220,3 +220,14 @@ __marimo__/
 # OpenMimi runtime data
 /data/
 
+# Browser test artifacts
+*.png
+xft_browser_profile/
+xft_*.txt
+gap_*.png
+bg_edges.png
+slider_*.png
+modal_crop.png
+piece_edge_mask.png
+.claude/
+

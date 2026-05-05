@@ -262,10 +262,12 @@ class BrowserTool(ToolBase):
         download_dir: str,
         viewport: tuple[int, int] = (1280, 800),
         headless: bool = False,
+        user_data_dir: str | None = None,
     ) -> None:
         self._download_dir = download_dir
         self._viewport = viewport
         self._headless = headless
+        self._user_data_dir = user_data_dir
         self._session: Any = None
         self._lock = asyncio.Lock()
 
@@ -872,10 +874,17 @@ class BrowserTool(ToolBase):
             from browser_use import BrowserProfile, BrowserSession
 
             _browser_trace("ensure:create_BrowserSession")
-            profile = BrowserProfile(
+            _browser_args = [
+                "--disable-blink-features=AutomationControlled",
+            ]
+            profile_kwargs: dict[str, Any] = dict(
                 downloads_path=str(self._download_dir),
                 headless=self._headless,
+                args=_browser_args,
             )
+            if self._user_data_dir:
+                profile_kwargs["user_data_dir"] = self._user_data_dir
+            profile = BrowserProfile(**profile_kwargs)
             session = BrowserSession(browser_profile=profile)
             await session.start()
             _browser_trace("ensure:after_session.start")
