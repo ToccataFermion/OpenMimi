@@ -168,6 +168,18 @@ _HOVER_DISPATCH_JS = """(x, y) => {
 }
 """
 
+# Fallback when CDP dispatchMouseEvent stalls: fire a JS click on the element
+# at the same coordinates. Many SPAs bind to the click event rather than
+# mousedown/mouseup, so this covers the gap when the CDP mouse release never
+# arrives.
+_CLICK_FALLBACK_JS = """(x, y) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return false;
+    el.click();
+    return true;
+}
+"""
+
 # Coordinates are from the same locator click; many SPAs leave focus on a host
 # <div> while the real <input> sits in light DOM below or inside shadow DOM.
 _FOCUS_AND_FILL_JS = """(value, x, y) => {
@@ -453,6 +465,7 @@ class BrowserTool(ToolBase):
 
     async def _safe_mouse_click(
         self,
+        page: Any,
         mouse: Any,
         x: int,
         y: int,
@@ -466,6 +479,10 @@ class BrowserTool(ToolBase):
         effects (observed on xft.cmbchina.com). The mousedown is almost always
         already dispatched, so we swallow the timeout and continue rather than
         freezing the agent until the outer tool timeout fires.
+
+        On timeout we also fire a JS ``element.click()`` fallback so sites that
+        rely on the ``click`` event (rather than mousedown/mouseup) still see
+        the action.
         """
         try:
             await asyncio.wait_for(mouse.click(x=x, y=y), timeout=timeout)
@@ -478,6 +495,14 @@ class BrowserTool(ToolBase):
                     await asyncio.wait_for(mouse.up(), timeout=1.0)
                 except Exception:
                     pass
+            # JS fallback: fire click event at the same coordinates.
+            try:
+                await asyncio.wait_for(
+                    page.evaluate(_CLICK_FALLBACK_JS, x, y),
+                    timeout=2.0,
+                )
+            except Exception:
+                pass
             return False
 
     async def _handle_click(
@@ -500,7 +525,7 @@ class BrowserTool(ToolBase):
         mouse = await page.mouse
         _browser_trace("click:after_page_mouse")
         _browser_trace("click:before_mouse_click")
-        ok = await self._safe_mouse_click(mouse, x, y)
+        ok = await self._safe_mouse_click(page, mouse, x, y)
         _browser_trace(f"click:after_mouse_click ok={ok}")
         msg = f"Clicked at ({x}, {y}) by {resolved.by}"
         if not ok:
@@ -561,7 +586,7 @@ class BrowserTool(ToolBase):
             )
             click_x, click_y = x, y
             mouse = await page.mouse
-            await self._safe_mouse_click(mouse, x, y)
+            await self._safe_mouse_click(page, mouse, x, y)
             note, tab_frag = await self._reconcile_tabs_if_needed(
                 self._session, ids_before, "type (focus click)"
             )
@@ -605,7 +630,7 @@ class BrowserTool(ToolBase):
         before = _snapshot_files(download_dir)
 
         mouse = await page.mouse
-        await self._safe_mouse_click(mouse, x, y)
+        await self._safe_mouse_click(page, mouse, x, y)
 
         tab_note, tab_frag = await self._reconcile_tabs_if_needed(
             self._session, ids_before, "download"
