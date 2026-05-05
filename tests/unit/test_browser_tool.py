@@ -110,10 +110,10 @@ class FakePage:
             if r is None:
                 return "null"
             return json.dumps(r)
+        if "__OPENMIMI_FOCUS_FILL__" in js:
+            return self._focus_fill_result
         if "elementFromPoint" in js:  # _HOVER_DISPATCH_JS
             return "true"
-        if "isContentEditable" in js:  # _FOCUS_AND_FILL_JS
-            return self._focus_fill_result
         if "innerText" in js:  # _PAGE_TEXT_JS
             return self._page_text
         return ""
@@ -374,7 +374,9 @@ async def test_type_without_locator_focus_succeeds() -> None:
     assert not result.is_error
     assert "Typed 5" in result.output
     assert page._mouse_obj.clicks == []
-    assert any("isContentEditable" in js for js, _ in page.evaluate_calls)
+    fill_call = next(c for c in page.evaluate_calls if "__OPENMIMI_FOCUS_FILL__" in c[0])
+    assert fill_call[1][0] == "hello"
+    assert fill_call[1][1] is None and fill_call[1][2] is None
 
 
 @pytest.mark.asyncio
@@ -396,6 +398,8 @@ async def test_type_with_target_text_clicks_then_fills() -> None:
     assert not result.is_error
     assert page._mouse_obj.clicks == [{"x": 50, "y": 60}]
     assert result.details["target_resolved"]["by"] == "text"
+    fill_call = next(c for c in page.evaluate_calls if "__OPENMIMI_FOCUS_FILL__" in c[0])
+    assert fill_call[1] == ("playwright", 50, 60)
 
 
 # ---------- extract --------------------------------------------------------

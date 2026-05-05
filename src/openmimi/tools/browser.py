@@ -83,7 +83,9 @@ _FIND_TEXT_JS = """(text) => {
     const PRIORITIZED = 'a, button, input, select, textarea,'
         + '[role="button"], [role="link"], [role="tab"], [role="menuitem"]';
     const labelOf = (el) => (
-        el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || ''
+        el.innerText || el.value
+        || el.getAttribute('placeholder') || el.getAttribute('name')
+        || el.getAttribute('aria-label') || el.getAttribute('title') || ''
     ).trim();
     const visible = (el) => {
         const r = el.getBoundingClientRect();
@@ -128,22 +130,66 @@ _HOVER_DISPATCH_JS = """(x, y) => {
 }
 """
 
-_FOCUS_AND_FILL_JS = """(value) => {
-    const el = document.activeElement;
-    if (!el) return false;
-    const tag = (el.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea') {
-        el.value = value;
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        el.dispatchEvent(new Event('change', {bubbles: true}));
-        return true;
-    }
-    if (el.isContentEditable) {
-        el.textContent = value;
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        return true;
-    }
-    return false;
+# Coordinates are from the same locator click; many SPAs leave focus on a host
+# <div> while the real <input> sits in light DOM below or inside shadow DOM.
+_FOCUS_AND_FILL_JS = """/*__OPENMIMI_FOCUS_FILL__*/(value, x, y) => {
+    const tryFill = (el, val) => {
+        if (!el) return false;
+        const tag = (el.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea') {
+            if (el.disabled) return false;
+            const ty = (el.getAttribute('type') || 'text').toLowerCase();
+            if (ty === 'hidden') return false;
+            el.focus();
+            el.value = val;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+        }
+        if (el.isContentEditable) {
+            el.focus();
+            el.textContent = val;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            return true;
+        }
+        return false;
+    };
+    const pickEditableUnder = (root) => {
+        if (!root) return null;
+        if (root.shadowRoot) {
+            const inner = root.shadowRoot.querySelector(
+                'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]),'
+                + '[contenteditable="true"]'
+            );
+            if (inner) return inner;
+        }
+        const sub = root.querySelector && root.querySelector(
+            ':scope input:not([type="hidden"]):not([disabled]),'
+            + ':scope textarea:not([disabled]), :scope [contenteditable="true"]'
+        );
+        return sub || null;
+    };
+    const fromPoint = (px, py) => {
+        if (px === undefined || py === undefined || px === null || py === null) {
+            return null;
+        }
+        const top = document.elementFromPoint(Number(px), Number(py));
+        if (!top) return null;
+        let el = top;
+        for (let depth = 0; el && depth < 14; depth++) {
+            const pick = pickEditableUnder(el);
+            if (pick) return pick;
+            const tag = (el.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
+                return el;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    };
+    let el = fromPoint(x, y);
+    if (!el) el = document.activeElement;
+    return tryFill(el, value);
 }
 """
 
@@ -411,6 +457,8 @@ class BrowserTool(ToolBase):
     ) -> tuple[str, TargetResolved | None, dict[str, Any]]:
         tab_frag: dict[str, Any] = {}
         resolved: TargetResolved | None = None
+        click_x: int | None = None
+        click_y: int | None = None
         if (
             action.target_text is not None
             or action.target_hint is not None
@@ -423,6 +471,7 @@ class BrowserTool(ToolBase):
                 coordinate=action.coordinate,
                 action_label="type",
             )
+            click_x, click_y = x, y
             mouse = await page.mouse
             await mouse.click(x=x, y=y)
             note, tab_frag = await self._reconcile_tabs_if_needed(
@@ -431,7 +480,9 @@ class BrowserTool(ToolBase):
         else:
             note = None
 
-        ok = await page.evaluate(_FOCUS_AND_FILL_JS, action.text)
+        ok = await page.evaluate(
+            _FOCUS_AND_FILL_JS, action.text, click_x, click_y
+        )
         if str(ok).lower() != "true":
             raise _BrowserToolError(
                 ErrorCode.TARGET_NOT_FOUND,
