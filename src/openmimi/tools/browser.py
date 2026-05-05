@@ -170,7 +170,8 @@ _HOVER_DISPATCH_JS = """(x, y) => {
 
 # Coordinates are from the same locator click; many SPAs leave focus on a host
 # <div> while the real <input> sits in light DOM below or inside shadow DOM.
-_FOCUS_AND_FILL_JS = """/*__OPENMIMI_FOCUS_FILL__*/(value, x, y) => {
+_FOCUS_AND_FILL_JS = """(value, x, y) => {
+    /* __OPENMIMI_FOCUS_FILL__ */
     const tryFill = (el, val) => {
         if (!el) return false;
         const tag = (el.tagName || '').toLowerCase();
