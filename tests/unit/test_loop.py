@@ -377,6 +377,82 @@ async def test_old_images_are_trimmed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_tool_name_becomes_protocol_error() -> None:
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "", {"raw_arguments": '{"action": "click"'})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("recovered")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    audit = _RecordingAudit()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        audit=audit,
+    )
+
+    tr = out[2]["content"][0]
+    assert tr["is_error"] is True
+    assert "missing 'name'" in tr["content"][0]["text"]
+    assert tool.received == []
+
+    assert len(audit.logs) == 1
+    log = audit.logs[0]
+    assert log["tool"] == "<unknown>"
+    assert log["is_error"] is True
+    assert log["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_raw_arguments_only_input_becomes_protocol_error() -> None:
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [
+                    _tool_use(
+                        "tu1",
+                        "browser",
+                        {"raw_arguments": '{"action": "click", "coor'},
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("recovered")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    audit = _RecordingAudit()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        audit=audit,
+    )
+
+    tr = out[2]["content"][0]
+    assert tr["is_error"] is True
+    assert "raw_arguments" in tr["content"][0]["text"]
+    assert tool.received == []
+
+    log = audit.logs[0]
+    assert log["tool"] == "browser"
+    assert log["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+
+
+@pytest.mark.asyncio
 async def test_audit_optional() -> None:
     llm = _ScriptedLLM(
         [

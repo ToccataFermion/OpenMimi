@@ -40,6 +40,34 @@ def test_click_with_coordinate_ok() -> None:
     assert parsed.coordinate == (812, 124)
 
 
+def test_click_with_coordinate_string_jsonish() -> None:
+    parsed = parse_browser_tool_input(
+        {"action": "click", "coordinate": "[290, 35]"}
+    )
+    assert parsed.coordinate == (290, 35)
+
+
+def test_click_with_coordinate_string_compact() -> None:
+    parsed = parse_browser_tool_input(
+        {"action": "click", "coordinate": "290,35"}
+    )
+    assert parsed.coordinate == (290, 35)
+
+
+def test_click_with_coordinate_string_parens() -> None:
+    parsed = parse_browser_tool_input(
+        {"action": "click", "coordinate": "(812, 124)"}
+    )
+    assert parsed.coordinate == (812, 124)
+
+
+def test_click_with_coordinate_string_garbage_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        parse_browser_tool_input(
+            {"action": "click", "coordinate": "absolutely not a tuple"}
+        )
+
+
 def test_click_locator_exclusive() -> None:
     with pytest.raises(ValidationError) as exc:
         parse_browser_tool_input(

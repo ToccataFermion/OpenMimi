@@ -113,6 +113,27 @@ async def sampling_loop(
             tool_name = str(block.get("name", ""))
             tool_input = block.get("input") or {}
 
+            protocol_err = _detect_protocol_error(tool_name, tool_input)
+            if protocol_err is not None:
+                tool_result_blocks.append(
+                    _make_error_result_block(block_id, protocol_err)
+                )
+                if audit is not None:
+                    audit.log_tool_call(
+                        session_id=session_id,
+                        step=step,
+                        tool=tool_name or "<unknown>",
+                        tool_input=tool_input,
+                        result_summary=protocol_err[
+                            :_RESULT_SUMMARY_MAX_CHARS
+                        ],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                        image_path=None,
+                        duration_ms=0,
+                    )
+                continue
+
             t0 = time.monotonic()
             try:
                 result = await tools.run(tool_name, tool_input)
@@ -166,6 +187,37 @@ async def sampling_loop(
         _trim_old_images(messages, only_n_most_recent_images)
 
     return messages
+
+
+def _detect_protocol_error(
+    tool_name: str, tool_input: dict[str, Any]
+) -> str | None:
+    """Return a human-readable explanation for malformed tool_use blocks.
+
+    Some Anthropic-compatible proxies occasionally emit corrupt tool_use
+    fragments: missing `name`, or a payload that contains only the partial
+    raw arguments string from a streaming chunk. Without explicit handling
+    the loop would either KeyError on an unknown tool or invoke a tool
+    with a useless input dict; instead we surface a clear protocol error
+    so the model resynthesises a clean tool call on the next turn.
+    """
+    if not tool_name:
+        return (
+            "tool_use block was missing 'name'; this is usually a streaming "
+            "fragment from the upstream provider. Please reissue the full "
+            "tool call with a valid `name` and `input`."
+        )
+    if (
+        isinstance(tool_input, dict)
+        and len(tool_input) == 1
+        and "raw_arguments" in tool_input
+    ):
+        return (
+            "tool_use input was a `raw_arguments` fragment from the upstream "
+            "provider, not a structured object. Please reissue the call with "
+            "a complete JSON `input` object."
+        )
+    return None
 
 
 def _to_tool_result_block(tool_use_id: str, result: ToolResult) -> dict[str, Any]:

@@ -8,12 +8,58 @@ Design:
 """
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
+)
+
+
+def _coerce_coordinate(value: Any) -> Any:
+    """Best-effort coerce common string forms of `[x, y]` into a real list.
+
+    Some Anthropic-compatible upstream providers (e.g. Aliyun MaaS) serialize
+    nested JSON values as plain strings inside the `tool_use.input` payload,
+    so the model intends `coordinate=[x, y]` but we receive
+    `coordinate="[x, y]"`. Without this validator the strict tuple type
+    would reject the call and force the model to retry blindly.
+
+    Accepted spellings (whitespace tolerant):
+        "[290, 35]"   "(290, 35)"   "290, 35"   "290,35"
+        [290, 35]     (290, 35)     # passed through unchanged
+    """
+    if value is None or isinstance(value, (list, tuple)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, (list, tuple)):
+            return parsed
+        stripped = text.strip("[](){} \t")
+        if "," in stripped:
+            parts = [p.strip() for p in stripped.split(",")]
+            if len(parts) == 2:
+                try:
+                    return [int(float(parts[0])), int(float(parts[1]))]
+                except ValueError:
+                    return value
+    return value
+
 
 Coordinate = Annotated[
     tuple[int, int],
+    BeforeValidator(_coerce_coordinate),
     Field(description="Pixel [x, y] within the current viewport (origin top-left)."),
 ]
 
