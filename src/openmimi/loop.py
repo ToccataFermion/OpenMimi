@@ -1,20 +1,273 @@
-"""Sampling loop: LLM -> tool_use -> tools.run -> tool_result -> repeat."""
+"""Sampling loop: LLM <-> tool_use <-> tool_result.
+
+Mirrors the structure of `anthropic-quickstarts/computer-use-demo/loop.py`
+but adapted to OpenMimi's ToolCollection / LLMClient / AuditSink interfaces.
+
+The loop:
+  1. Calls the LLM with the current message history and tool schemas.
+  2. Appends the assistant message verbatim.
+  3. If the assistant requested no tool, returns.
+  4. Otherwise, dispatches every `tool_use` block through `ToolCollection.run`,
+     translates each `ToolResult` back into a `tool_result` content block, and
+     appends them as a single `user` message.
+  5. Optionally trims older screenshot images so the prompt does not grow
+     without bound (`only_n_most_recent_images`).
+"""
 from __future__ import annotations
 
-from typing import Any
+import base64
+import time
+from typing import Any, Protocol
+
+from .llm.base import LLMClient
+from .tools.collection import ToolCollection
+from .tools.errors import ErrorCode
+from .tools.result import ToolResult
+
+
+class AuditSink(Protocol):
+    """Minimal audit surface consumed by the sampling loop.
+
+    `JsonlAuditLogger` satisfies this Protocol; tests can plug in any object
+    with the same shape.
+    """
+
+    def save_screenshot(
+        self, *, session_id: str, step: int, png_bytes: bytes
+    ) -> str: ...
+
+    def log_tool_call(
+        self,
+        *,
+        session_id: str,
+        step: int,
+        tool: str,
+        tool_input: dict[str, Any],
+        result_summary: str,
+        is_error: bool,
+        error_code: str | None,
+        image_path: str | None,
+        duration_ms: int,
+    ) -> None: ...
+
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are OpenMimi, a local Windows AI agent. You operate tools using the "
+    "Anthropic tool_use protocol. Prefer semantic locators (target_text / "
+    "target_hint) over raw coordinates whenever possible. After each tool "
+    "call you receive a fresh screenshot; observe carefully before deciding "
+    "the next action. Stop calling tools and reply in plain text once the "
+    "task is complete."
+)
+
+_RESULT_SUMMARY_MAX_CHARS = 500
+_OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
 
 
 async def sampling_loop(
     *,
     messages: list[dict[str, Any]],
-    tools: Any,
-    llm: Any,
-    audit: Any,
+    tools: ToolCollection,
+    llm: LLMClient,
+    session_id: str,
+    audit: AuditSink | None = None,
+    system: str = _DEFAULT_SYSTEM_PROMPT,
     max_turns: int = 30,
+    only_n_most_recent_images: int = 4,
+    max_tokens: int = 4096,
 ) -> list[dict[str, Any]]:
-    """LLM-driven tool_use loop. Returns the final messages list.
+    """Run the LLM-driven tool_use loop.
 
-    Mirrors the structure of `anthropic-quickstarts/computer-use-demo/loop.py`
-    but with OpenMimi's ToolCollection / LLMClient / audit interfaces.
+    Returns the final messages list (the same list passed in, mutated in place).
+
+    The loop terminates when:
+      - the assistant produces no `tool_use` block (or `stop_reason != "tool_use"`),
+      - the turn budget `max_turns` is exhausted,
+      - any unhandled exception escapes (caller decides whether to retry).
     """
-    raise NotImplementedError("M1: implement sampling loop")
+    step = 0
+
+    for _turn in range(max_turns):
+        response = await llm.create(
+            system=system,
+            messages=messages,
+            tools=tools.to_params(),
+            max_tokens=max_tokens,
+        )
+
+        content = response.get("content") or []
+        messages.append({"role": "assistant", "content": content})
+
+        stop_reason = response.get("stop_reason")
+        tool_use_blocks = [
+            b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+
+        if not tool_use_blocks or stop_reason != "tool_use":
+            return messages
+
+        tool_result_blocks: list[dict[str, Any]] = []
+        for block in tool_use_blocks:
+            step += 1
+            block_id = str(block.get("id", ""))
+            tool_name = str(block.get("name", ""))
+            tool_input = block.get("input") or {}
+
+            t0 = time.monotonic()
+            try:
+                result = await tools.run(tool_name, tool_input)
+            except Exception as exc:
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                err_text = (
+                    f"Tool internal error: {exc.__class__.__name__}: {exc}"
+                )
+                tool_result_blocks.append(
+                    _make_error_result_block(block_id, err_text)
+                )
+                if audit is not None:
+                    audit.log_tool_call(
+                        session_id=session_id,
+                        step=step,
+                        tool=tool_name,
+                        tool_input=tool_input,
+                        result_summary=err_text[:_RESULT_SUMMARY_MAX_CHARS],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                        image_path=None,
+                        duration_ms=duration_ms,
+                    )
+                continue
+
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            tool_result_blocks.append(_to_tool_result_block(block_id, result))
+
+            if audit is not None:
+                image_path = _persist_screenshot_if_any(
+                    audit=audit,
+                    session_id=session_id,
+                    step=step,
+                    base64_image=result.base64_image,
+                )
+                audit.log_tool_call(
+                    session_id=session_id,
+                    step=step,
+                    tool=tool_name,
+                    tool_input=tool_input,
+                    result_summary=(result.output or "")[
+                        :_RESULT_SUMMARY_MAX_CHARS
+                    ],
+                    is_error=result.is_error,
+                    error_code=_extract_error_code(result),
+                    image_path=image_path,
+                    duration_ms=duration_ms,
+                )
+
+        messages.append({"role": "user", "content": tool_result_blocks})
+        _trim_old_images(messages, only_n_most_recent_images)
+
+    return messages
+
+
+def _to_tool_result_block(tool_use_id: str, result: ToolResult) -> dict[str, Any]:
+    """Translate a `ToolResult` into an Anthropic `tool_result` content block."""
+    sub_content: list[dict[str, Any]] = []
+    if result.output:
+        sub_content.append({"type": "text", "text": result.output})
+    if result.base64_image:
+        sub_content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": result.base64_image,
+                },
+            }
+        )
+    if not sub_content:
+        sub_content.append({"type": "text", "text": "(no output)"})
+
+    block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": sub_content,
+    }
+    if result.is_error:
+        block["is_error"] = True
+    return block
+
+
+def _make_error_result_block(tool_use_id: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": [{"type": "text", "text": text}],
+        "is_error": True,
+    }
+
+
+def _extract_error_code(result: ToolResult) -> str | None:
+    if not result.details:
+        return None
+    code = result.details.get("error_code")
+    return str(code) if code else None
+
+
+def _persist_screenshot_if_any(
+    *,
+    audit: AuditSink,
+    session_id: str,
+    step: int,
+    base64_image: str | None,
+) -> str | None:
+    if not base64_image:
+        return None
+    try:
+        png_bytes = base64.b64decode(base64_image, validate=False)
+    except Exception:
+        return None
+    try:
+        return audit.save_screenshot(
+            session_id=session_id, step=step, png_bytes=png_bytes
+        )
+    except Exception:
+        return None
+
+
+def _trim_old_images(messages: list[dict[str, Any]], keep_n: int) -> None:
+    """Replace all but the most recent `keep_n` screenshot images with text stubs.
+
+    Walks every `user` -> `tool_result` -> `image` sub-block in chronological
+    order, then rewrites older entries to a small text marker. The action
+    trail (text outputs, ordering) stays intact so the model can still reason
+    about earlier steps.
+    """
+    if keep_n < 0:
+        return
+
+    image_locations: list[tuple[list[Any], int]] = []
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            sub = block.get("content")
+            if not isinstance(sub, list):
+                continue
+            for i, item in enumerate(sub):
+                if isinstance(item, dict) and item.get("type") == "image":
+                    image_locations.append((sub, i))
+
+    if len(image_locations) <= keep_n:
+        return
+
+    n_to_drop = len(image_locations) - keep_n
+    for parent, idx in image_locations[:n_to_drop]:
+        parent[idx] = {"type": "text", "text": _OMITTED_IMAGE_PLACEHOLDER}
+
+
+__all__ = ["AuditSink", "sampling_loop"]
