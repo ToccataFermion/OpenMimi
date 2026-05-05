@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import sys
 import time
 from pathlib import Path
@@ -73,6 +74,43 @@ _POST_HOVER_SETTLE_S = 0.4
 # After a click (or other pointer action) that may open target=_blank, wait
 # briefly so SessionManager registers the new target before we snapshot tabs.
 _POST_POINTER_TAB_SETTLE_S = 0.25
+
+_bt_trace_origin = 0.0
+_bt_trace_last = 0.0
+
+
+def _browser_trace_enabled() -> bool:
+    v = os.environ.get("OPENMIMI_BROWSER_TRACE", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _browser_trace_reset(action_label: str) -> None:
+    global _bt_trace_origin, _bt_trace_last
+    if not _browser_trace_enabled():
+        return
+    _bt_trace_origin = _bt_trace_last = time.monotonic()
+    print(
+        f"[browser-trace] begin action={action_label}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _browser_trace(phase: str) -> None:
+    """Log monotonic deltas between phases when OPENMIMI_BROWSER_TRACE is set."""
+    global _bt_trace_last
+    if not _browser_trace_enabled():
+        return
+    now = time.monotonic()
+    delta_ms = int((now - _bt_trace_last) * 1000)
+    total_ms = int((now - _bt_trace_origin) * 1000)
+    print(
+        f"[browser-trace] +{delta_ms}ms at {phase} (total {total_ms}ms)",
+        file=sys.stderr,
+        flush=True,
+    )
+    _bt_trace_last = now
+
 
 # JS helper: locate the centre of the element whose visible text matches `text`.
 # Tries strict equality on interactive elements first, then loose contains
@@ -237,7 +275,9 @@ class BrowserTool(ToolBase):
 
         async with self._lock:
             try:
+                _browser_trace_reset(type(validated).__name__)
                 page = await self._ensure_started()
+                _browser_trace("after_ensure_started")
                 assert self._session is not None
                 ids_before = self._page_target_ids(self._session)
                 resolved: TargetResolved | None = None
@@ -275,9 +315,13 @@ class BrowserTool(ToolBase):
                             page, validated, ids_before=ids_before
                         )
                     )
+                    _browser_trace("download_path:after_handle_download")
                     await _unstick_debugger_paused_pages(self._session)
+                    _browser_trace("download_path:after_unstick")
                     page = await self._session.must_get_current_page()
+                    _browser_trace("download_path:after_must_get_current_page")
                     base64_image = await self._safe_screenshot(page)
+                    _browser_trace("download_path:after_screenshot")
                     details = await self._build_details(
                         page,
                         resolved=resolved,
@@ -295,9 +339,13 @@ class BrowserTool(ToolBase):
                         f"unhandled action: {type(validated).__name__}",
                     )
 
+                _browser_trace("after_action_handler")
                 await _unstick_debugger_paused_pages(self._session)
+                _browser_trace("after_unstick")
                 page = await self._session.must_get_current_page()
+                _browser_trace("after_must_get_current_page")
                 base64_image = await self._safe_screenshot(page)
+                _browser_trace("after_screenshot")
                 details = await self._build_details(
                     page, resolved=resolved, **tab_frag
                 )
@@ -409,6 +457,7 @@ class BrowserTool(ToolBase):
         *,
         ids_before: set[str],
     ) -> tuple[str, TargetResolved, dict[str, Any]]:
+        _browser_trace("click:before_resolve_locator")
         x, y, resolved = await self._resolve_locator(
             page,
             target_text=action.target_text,
@@ -416,8 +465,13 @@ class BrowserTool(ToolBase):
             coordinate=action.coordinate,
             action_label="click",
         )
+        _browser_trace("click:after_resolve_locator")
+        _browser_trace("click:before_page_mouse")
         mouse = await page.mouse
+        _browser_trace("click:after_page_mouse")
+        _browser_trace("click:before_mouse_click")
         await mouse.click(x=x, y=y)
+        _browser_trace("click:after_mouse_click")
         msg = f"Clicked at ({x}, {y}) by {resolved.by}"
         note, frag = await self._reconcile_tabs_if_needed(
             self._session, ids_before, "click"
@@ -607,7 +661,9 @@ class BrowserTool(ToolBase):
             return x, y, TargetResolved(by="coordinate", value=f"{x},{y}")
 
         if target_text is not None:
+            _browser_trace("resolve_locator:before_find_text_coords")
             coords = await self._find_text_coords(page, target_text)
+            _browser_trace("resolve_locator:after_find_text_coords")
             if coords is None:
                 raise _BrowserToolError(
                     ErrorCode.TARGET_NOT_FOUND,
@@ -631,7 +687,9 @@ class BrowserTool(ToolBase):
     async def _find_text_coords(
         self, page: Any, text: str
     ) -> tuple[int, int] | None:
+        _browser_trace("find_text:before_page_evaluate")
         raw = await page.evaluate(_FIND_TEXT_JS, text)
+        _browser_trace("find_text:after_page_evaluate")
         coords = _parse_coords(raw)
         return coords
 
@@ -697,13 +755,17 @@ class BrowserTool(ToolBase):
         if not callable(gp):
             return None, {}
 
+        _browser_trace(f"reconcile:{verb}:before_settle_sleep")
         await asyncio.sleep(_POST_POINTER_TAB_SETTLE_S)
+        _browser_trace(f"reconcile:{verb}:after_settle_sleep")
         try:
             targets = gp()
         except Exception:
             return None, {}
+        _browser_trace(f"reconcile:{verb}:after_get_page_targets n={len(targets)}")
 
         await _unstick_debugger_paused_pages(session)
+        _browser_trace(f"reconcile:{verb}:after_unstick")
 
         new_ids = [t.target_id for t in targets if t.target_id not in ids_before]
         rows = self._open_tab_rows(session, targets)
@@ -724,7 +786,11 @@ class BrowserTool(ToolBase):
         note_lines: list[str] = []
         if new_ids:
             newest = new_ids[-1]
+            _browser_trace(
+                f"reconcile:{verb}:before_focus_newest …{newest[-6:]}"
+            )
             await _focus_page_target_for_agent(session, newest)
+            _browser_trace(f"reconcile:{verb}:after_focus_newest")
             frag["switched_to_target_id"] = newest
             note_lines.append(
                 f"New tab(s) after {verb} ({len(new_ids)} opened). "
@@ -744,17 +810,21 @@ class BrowserTool(ToolBase):
     # ----- session lifecycle -----------------------------------------------
 
     async def _ensure_started(self) -> Any:
+        _browser_trace("ensure:enter")
         if self._session is None:
             from browser_use import BrowserProfile, BrowserSession
 
+            _browser_trace("ensure:create_BrowserSession")
             profile = BrowserProfile(
                 downloads_path=str(self._download_dir),
                 headless=self._headless,
             )
             session = BrowserSession(browser_profile=profile)
             await session.start()
+            _browser_trace("ensure:after_session.start")
             self._session = session
         page = await self._session.must_get_current_page()
+        _browser_trace("ensure:after_must_get_current_page")
         try:
             await page.set_viewport_size(self._viewport[0], self._viewport[1])
         except Exception:
@@ -827,18 +897,25 @@ async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
 
     Fakes without ``session_manager`` fall back to ``SwitchTabEvent``.
     """
+    suf = target_id[-6:] if len(target_id) >= 6 else target_id
+    _browser_trace(f"focus:enter …{suf}")
     sm = getattr(session, "session_manager", None)
     gc = getattr(session, "get_or_create_cdp_session", None)
     if sm is None or not callable(gc):
         from browser_use.browser.events import SwitchTabEvent
 
+        _browser_trace("focus:dispatch_SwitchTabEvent_fallback")
         await session.event_bus.dispatch(SwitchTabEvent(target_id=target_id))
+        _browser_trace("focus:after_SwitchTabEvent_fallback")
         return
 
+    _browser_trace("focus:before_get_or_create_cdp_session(1)")
     cdp_session = await gc(target_id=target_id, focus=True)
+    _browser_trace("focus:after_get_or_create_cdp_session(1)")
     await cdp_session.cdp_client.send.Target.activateTarget(
         params={"targetId": target_id}
     )
+    _browser_trace("focus:after_activate_target")
 
     dw = getattr(session, "_dom_watchdog", None)
     if dw is not None:
@@ -846,7 +923,9 @@ async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
     session._cached_browser_state_summary = None
     session._cached_selector_map.clear()
 
+    _browser_trace("focus:before_get_or_create_cdp_session(2)")
     await gc(target_id=target_id, focus=True)
+    _browser_trace("focus:after_get_or_create_cdp_session(2)")
 
     profile = getattr(session, "browser_profile", None)
     if (
@@ -857,7 +936,10 @@ async def _focus_page_target_for_agent(session: Any, target_id: str) -> None:
         vw = profile.viewport.width
         vh = profile.viewport.height
         dpr = profile.device_scale_factor or 1.0
+        _browser_trace("focus:before_cdp_set_viewport")
         await session._cdp_set_viewport(vw, vh, dpr, target_id=target_id)
+        _browser_trace("focus:after_cdp_set_viewport")
+    _browser_trace("focus:exit")
 
 
 async def _unstick_debugger_paused_pages(session: Any) -> None:
@@ -867,26 +949,38 @@ async def _unstick_debugger_paused_pages(session: Any) -> None:
     a login window. That dims the page and shows a yellow banner (often mojibake
     under non-UTF8 consoles). CDP can stay blocked until the pause is cleared.
     """
+    _browser_trace("unstick:enter")
     gp = getattr(session, "get_page_targets", None)
     gc = getattr(session, "get_or_create_cdp_session", None)
     if not callable(gp) or not callable(gc):
+        _browser_trace("unstick:skip_no_gp_gc")
         return
     try:
         targets = gp()
     except Exception:
+        _browser_trace("unstick:skip_get_targets_failed")
         return
-    for t in targets:
+    _browser_trace(f"unstick:targets n={len(targets)}")
+    for i, t in enumerate(targets):
+        tid = getattr(t, "target_id", "") or ""
+        suf = tid[-6:] if len(tid) >= 6 else tid
+        _browser_trace(f"unstick:target[{i}] …{suf} before_gc")
         try:
             cdp_sess = await gc(target_id=t.target_id, focus=False)
+            _browser_trace(f"unstick:target[{i}] after_gc")
             sid = cdp_sess.session_id
             client = cdp_sess.cdp_client
             await client.send.Runtime.runIfWaitingForDebugger(session_id=sid)
+            _browser_trace(f"unstick:target[{i}] after_runIfWaiting")
             try:
                 await client.send.Debugger.resume(session_id=sid)
+                _browser_trace(f"unstick:target[{i}] after_debugger_resume")
             except Exception:
                 pass
         except Exception:
+            _browser_trace(f"unstick:target[{i}] exception_swallowed")
             pass
+    _browser_trace("unstick:done")
 
 
 def _parse_coords(raw: Any) -> tuple[int, int] | None:

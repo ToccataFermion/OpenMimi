@@ -66,7 +66,7 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 _RESULT_SUMMARY_MAX_CHARS = 500
 _OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
-_DEFAULT_TOOL_TIMEOUT_S = 5.0
+_DEFAULT_TOOL_TIMEOUT_S = 10.0
 
 
 def _tool_run_timeout_seconds() -> float | None:
@@ -76,7 +76,7 @@ def _tool_run_timeout_seconds() -> float | None:
     independent from Anthropic's HTTP timeout (OPENMIMI_LLM_TIMEOUT_S).
     Set OPENMIMI_TOOL_TIMEOUT_S to ``0`` to disable (not recommended).
     """
-    raw = os.environ.get("OPENMIMI_TOOL_TIMEOUT_S", "5").strip().lower()
+    raw = os.environ.get("OPENMIMI_TOOL_TIMEOUT_S", "10").strip().lower()
     if raw in ("", "0", "none", "off", "inf", "infinity"):
         return None
     try:
@@ -208,6 +208,15 @@ async def sampling_loop(
                 _tool_progress(
                     f"[tool] step {step}: {tool_name} TIMEOUT after {tout}s"
                 )
+                if tool_name == "browser":
+                    bt = os.environ.get("OPENMIMI_BROWSER_TRACE", "").strip().lower()
+                    if bt not in ("1", "true", "yes", "on"):
+                        print(
+                            "[browser-trace] Set OPENMIMI_BROWSER_TRACE=1 (env or .env) "
+                            "to print phase timings on stderr and find the stalled await.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                 continue
             except Exception as exc:
                 duration_ms = int((time.monotonic() - t0) * 1000)
