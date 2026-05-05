@@ -142,6 +142,22 @@ class ClickInput(_Base, _LocatorMixin):
         return self
 
 
+class HoverInput(_Base, _LocatorMixin):
+    action: Literal["hover"]
+
+    @model_validator(mode="after")
+    def _require_locator(self) -> Self:
+        if (
+            self.target_text is None
+            and self.target_hint is None
+            and self.coordinate is None
+        ):
+            raise ValueError(
+                "hover requires one of: target_text | target_hint | coordinate"
+            )
+        return self
+
+
 class TypeInput(_Base, _LocatorMixin):
     action: Literal["type"]
     text: str = Field(description="Text to type. Use a separate `press` action for special keys.")
@@ -205,6 +221,7 @@ class DownloadInput(_Base, _LocatorMixin):
 BrowserToolInput = Annotated[
     NavigateInput
     | ClickInput
+    | HoverInput
     | TypeInput
     | PressInput
     | ScrollInput
@@ -271,6 +288,7 @@ __all__ = [
     "DownloadInput",
     "ExpectShape",
     "ExtractInput",
+    "HoverInput",
     "NavigateInput",
     "PressInput",
     "ScreenshotInput",

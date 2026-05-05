@@ -23,6 +23,7 @@ from .browser_schema import (
     DownloadInfo,
     DownloadInput,
     ExtractInput,
+    HoverInput,
     NavigateInput,
     PressInput,
     ScreenshotInput,
@@ -40,7 +41,9 @@ _TOOL_DESCRIPTION = (
     "(target_text / target_hint / coordinate; coordinate is mutually exclusive "
     "with the semantic targets). Every call returns a fresh screenshot plus the "
     "current URL/title in `details`. Prefer `target_text`/`target_hint`; fall "
-    "back to `coordinate` only when the element has no stable text."
+    "back to `coordinate` only when the element has no stable text. For "
+    "navigation menus that expand on mouse-over, use `hover` first to reveal "
+    "the submenu, then `click` the desired entry."
 )
 
 _DEFAULT_TIMEOUT_S = 15.0
@@ -54,6 +57,11 @@ _EXTRACT_MAX_CHARS = 4000
 # fails on a half-attached target. Waiting ~0.3s lets the target settle
 # without slowing the loop perceptibly.
 _POST_NAVIGATE_SETTLE_S = 0.3
+
+# After a hover the page often runs a CSS/JS transition before the submenu
+# is fully painted; sleeping briefly lets the screenshot capture the
+# expanded state so the LLM can pick the submenu entry on the next turn.
+_POST_HOVER_SETTLE_S = 0.4
 
 # JS helper: locate the centre of the element whose visible text matches `text`.
 # Tries strict equality on interactive elements first, then loose contains
@@ -172,6 +180,8 @@ class BrowserTool(ToolBase):
                     output = await self._handle_scroll(page, validated)
                 elif isinstance(validated, ClickInput):
                     output, resolved = await self._handle_click(page, validated)
+                elif isinstance(validated, HoverInput):
+                    output, resolved = await self._handle_hover(page, validated)
                 elif isinstance(validated, TypeInput):
                     output, resolved = await self._handle_type(page, validated)
                 elif isinstance(validated, ExtractInput):
@@ -305,6 +315,21 @@ class BrowserTool(ToolBase):
         mouse = await page.mouse
         await mouse.click(x=x, y=y)
         return f"Clicked at ({x}, {y}) by {resolved.by}", resolved
+
+    async def _handle_hover(
+        self, page: Any, action: HoverInput
+    ) -> tuple[str, TargetResolved]:
+        x, y, resolved = await self._resolve_locator(
+            page,
+            target_text=action.target_text,
+            target_hint=action.target_hint,
+            coordinate=action.coordinate,
+            action_label="hover",
+        )
+        mouse = await page.mouse
+        await mouse.move(x, y)
+        await asyncio.sleep(_POST_HOVER_SETTLE_S)
+        return f"Hovered at ({x}, {y}) by {resolved.by}", resolved
 
     async def _handle_type(
         self, page: Any, action: TypeInput

@@ -82,6 +82,36 @@ def test_click_requires_locator() -> None:
     assert "click requires one of" in str(exc.value)
 
 
+def test_hover_with_text_ok() -> None:
+    parsed = parse_browser_tool_input(
+        {"action": "hover", "target_text": "Solutions"}
+    )
+    assert parsed.action == "hover"
+    assert parsed.target_text == "Solutions"
+    assert parsed.coordinate is None
+
+
+def test_hover_requires_locator() -> None:
+    with pytest.raises(ValidationError) as exc:
+        parse_browser_tool_input({"action": "hover"})
+    assert "hover requires one of" in str(exc.value)
+
+
+def test_hover_locator_exclusive() -> None:
+    with pytest.raises(ValidationError) as exc:
+        parse_browser_tool_input(
+            {"action": "hover", "target_text": "Menu", "coordinate": [1, 2]}
+        )
+    assert "mutually exclusive" in str(exc.value)
+
+
+def test_hover_with_string_coordinate_coerces() -> None:
+    parsed = parse_browser_tool_input(
+        {"action": "hover", "coordinate": "[361, 30]"}
+    )
+    assert parsed.coordinate == (361, 30)
+
+
 def test_type_can_omit_locator() -> None:
     parsed = parse_browser_tool_input({"action": "type", "text": "hello"})
     assert parsed.action == "type"
@@ -169,6 +199,7 @@ def test_json_schema_exports() -> None:
     for action in (
         "navigate",
         "click",
+        "hover",
         "type",
         "press",
         "scroll",

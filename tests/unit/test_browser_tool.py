@@ -19,6 +19,7 @@ class FakeMouse:
     def __init__(self) -> None:
         self.clicks: list[dict[str, Any]] = []
         self.scrolls: list[dict[str, Any]] = []
+        self.moves: list[dict[str, Any]] = []
         self.on_click: Any = None
 
     async def click(self, x: int, y: int, **kwargs: Any) -> None:
@@ -27,6 +28,9 @@ class FakeMouse:
             res = self.on_click(x, y)
             if asyncio.iscoroutine(res):
                 await res
+
+    async def move(self, x: int, y: int, steps: int = 1) -> None:
+        self.moves.append({"x": x, "y": y, "steps": steps})
 
     async def scroll(
         self,
@@ -273,6 +277,45 @@ async def test_click_with_target_hint_unsupported() -> None:
     assert result.is_error
     assert result.details["error_code"] == ErrorCode.TARGET_NOT_FOUND.value
     assert page._mouse_obj.clicks == []
+
+
+# ---------- hover ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hover_with_target_text() -> None:
+    page = FakePage(find_text_result={"x": 361, "y": 30})
+    tool = _make_tool(page)
+    result = await tool({"action": "hover", "target_text": "解决方案"})
+    assert not result.is_error
+    assert page._mouse_obj.moves == [{"x": 361, "y": 30, "steps": 1}]
+    assert page._mouse_obj.clicks == []
+    assert result.details["target_resolved"]["by"] == "text"
+    assert result.details["target_resolved"]["value"] == "解决方案"
+    assert "Hovered at (361, 30)" in result.output
+
+
+@pytest.mark.asyncio
+async def test_hover_with_coordinate() -> None:
+    page = FakePage()
+    tool = _make_tool(page)
+    result = await tool({"action": "hover", "coordinate": [120, 240]})
+    assert not result.is_error
+    assert page._mouse_obj.moves == [{"x": 120, "y": 240, "steps": 1}]
+    assert result.details["target_resolved"] == {
+        "by": "coordinate",
+        "value": "120,240",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hover_with_target_text_not_found() -> None:
+    page = FakePage(find_text_result=None)
+    tool = _make_tool(page)
+    result = await tool({"action": "hover", "target_text": "Nope"})
+    assert result.is_error
+    assert result.details["error_code"] == ErrorCode.TARGET_NOT_FOUND.value
+    assert page._mouse_obj.moves == []
 
 
 # ---------- type -----------------------------------------------------------
