@@ -58,9 +58,9 @@ async def main() -> None:
         print(f"Result: {result.output}")
 
         print("\n" + "=" * 60)
-        print("Step 6: Click consent checkbox")
+        print("Step 6: Check consent checkbox with check action")
         print("=" * 60)
-        result = await tool({"action": "click", "target_text": "我已阅读并同意"})
+        result = await tool({"action": "check", "target_text": "我已阅读并同意"})
         print(f"Result: {result.output}")
 
         print("\n" + "=" * 60)
@@ -94,10 +94,19 @@ async def main() -> None:
         print(f"Result: {result.output}")
 
         print("\n" + "=" * 60)
-        print("Step 8: Click login button by text")
+        print("Step 8: Click login button by text (fallback to focus+Enter if click fails)")
         print("=" * 60)
         result = await tool({"action": "click", "target_text": "登录"})
-        print(f"Result: {result.output}")
+        print(f"Click result: {result.output}")
+        # If click didn't cause navigation, try focus + Enter
+        await asyncio.sleep(1.0)
+        result = await tool({"action": "snapshot"})
+        if "xft.cmbchina.com" in (result.output or "") and "dashboard" not in (result.output or "").lower():
+            print("Page unchanged after click, trying focus + Enter fallback...")
+            result = await tool({"action": "hover", "target_text": "登录"})
+            print(f"Hover result: {result.output}")
+            result = await tool({"action": "press", "key": "Enter"})
+            print(f"Enter result: {result.output}")
 
         print("\n" + "=" * 60)
         print("Step 9: Wait and snapshot for CAPTCHA or dashboard")

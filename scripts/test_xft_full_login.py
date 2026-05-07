@@ -427,55 +427,155 @@ async def main() -> None:
 
         # Post-login exploration
         print("\n" + "=" * 60)
-        print("Post-login exploration")
+        print("Post-login exploration: ? icon -> 在线客服")
         print("=" * 60)
 
-        # Extract full dashboard structure
-        dashboard_info = await page.evaluate("""() => {
-            const cards = Array.from(document.querySelectorAll('body *')).filter(el => {
-                const text = (el.innerText || '').trim();
-                return text.length > 0 && text.length < 50 && el.children.length === 0;
-            }).map(el => ({
-                text: el.innerText.trim(),
-                tag: el.tagName,
-                class: el.className,
-                rect: el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0
-            }));
-            return JSON.stringify({
-                url: window.location.href,
-                title: document.title,
-                uniqueTexts: [...new Set(cards.filter(c => c.rect).map(c => c.text))].slice(0, 60)
-            });
-        }""")
-        if isinstance(dashboard_info, str):
-            dashboard_info = json.loads(dashboard_info)
-        print(f"Dashboard texts: {json.dumps(dashboard_info.get('uniqueTexts', []), ensure_ascii=False, indent=2)}")
+        page = await tool._maybe_get_page()
 
-        # Try clicking some interesting features
-        features_to_try = ["薪税管家", "电子合同", "人员管理", "个税服务", "工资条"]
-        for feature in features_to_try:
-            print(f"\n--- Trying to click: {feature} ---")
-            try:
-                result = await tool({"action": "click", "target_text": feature})
-                print(f"Click result: {result.output}")
-                await asyncio.sleep(2.0)
+        # Step 1: Scan top bar for icon and image elements
+        print("\n--- Step 1: Scanning top bar for CS icon ---")
+        cs_candidates = None
+        if page:
+            cs_candidates = await page.evaluate("""() => {
+                const viewportW = window.innerWidth;
+                const all = Array.from(document.querySelectorAll('body *'));
+                const candidates = [];
+                for (const el of all) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 5 || r.height < 5 || r.top > 80 || r.left < viewportW * 0.5) continue;
+                    if (el.offsetParent === null) continue;
+                    const style = window.getComputedStyle(el);
+                    const text = (el.innerText || el.textContent || '').trim().slice(0, 20);
+                    const cls = typeof el.className === 'string' ? el.className : '';
+                    // Check for icon indicators
+                    const hasIconClass = /icon|svg|help|service|kefu|kf|support|custom/i.test(cls);
+                    const isImg = el.tagName === 'IMG';
+                    const isSvg = el.tagName === 'svg' || el.closest('svg') !== null;
+                    const hasBgImage = style.backgroundImage && style.backgroundImage !== 'none';
+                    const isCursorPointer = style.cursor === 'pointer';
+                    if (hasIconClass || isImg || isSvg || hasBgImage || isCursorPointer) {
+                        candidates.push({
+                            tag: el.tagName,
+                            class: cls.slice(0, 60),
+                            text: text,
+                            title: el.title || '',
+                            x: Math.round(r.left + r.width/2),
+                            y: Math.round(r.top + r.height/2),
+                            w: Math.round(r.width),
+                            h: Math.round(r.height),
+                            hasIconClass, isImg, isSvg, hasBgImage, isCursorPointer
+                        });
+                    }
+                }
+                // Deduplicate
+                const deduped = [];
+                for (const el of candidates) {
+                    if (!deduped.some(d => Math.abs(d.x - el.x) < 5 && Math.abs(d.y - el.y) < 5)) {
+                        deduped.push(el);
+                    }
+                }
+                return JSON.stringify(deduped.slice(0, 20));
+            }""")
+            if isinstance(cs_candidates, str):
+                try:
+                    cs_candidates = json.loads(cs_candidates)
+                except json.JSONDecodeError:
+                    cs_candidates = []
 
-                # Get current page text
-                result = await tool({"action": "extract", "instruction": "get text"})
-                print(f"Page text after click: {result.output[:300]}")
+        if cs_candidates:
+            print(f"Found {len(cs_candidates)} icon/image candidates in top-right:")
+            for el in cs_candidates:
+                flags = []
+                if el.get('hasIconClass'): flags.append('iconCls')
+                if el.get('isImg'): flags.append('img')
+                if el.get('isSvg'): flags.append('svg')
+                if el.get('hasBgImage'): flags.append('bgImg')
+                if el.get('isCursorPointer'): flags.append('pointer')
+                print(f"  ({el['x']},{el['y']}) {el['w']}x{el['h']} {el['tag']} text='{el['text']}' class='{el['class'][:30]}' [{','.join(flags)}]")
 
-                # Screenshot
+        # Try each candidate until we find one that reveals 在线客服
+        cs_found = False
+        clicked_icon = None
+        for el in (cs_candidates or []):
+            # Skip user profile related
+            cls = el.get('class', '').lower()
+            if any(k in cls for k in ['user', 'logo', 'avatar', 'extend', 'arrow', 'input', 'suffix']):
+                continue
+            # Skip large text nav items
+            if el['w'] > 80 and el['h'] > 30 and el.get('text'):
+                continue
+            print(f"\nTrying candidate at ({el['x']},{el['y']}) class='{el['class'][:30]}'")
+            result = await tool({"action": "click", "coordinate": [el["x"], el["y"]]})
+            print(f"Click result: {result.output}")
+            await asyncio.sleep(1.5)
+            clicked_icon = el
+            # Check if page now has 在线客服
+            page = await tool._maybe_get_page()
+            if page:
+                has_cs = await page.evaluate("""() => document.body.innerText.includes('在线客服')""")
+                if has_cs:
+                    print("[FOUND] 在线客服 text is now visible!")
+                    cs_found = True
+                    break
+                # Also check if any modal/popup appeared
+                modal_check = await page.evaluate("""() => {
+                    const modals = document.querySelectorAll('.ant-modal, .modal, [class*="dialog"], [class*="popup"]');
+                    return modals.length;
+                }""")
+                if modal_check > 0:
+                    print(f"[MODAL] {modal_check} modal/popup element(s) detected")
+            # Take screenshot for debugging
+            if page:
                 screenshot_b64 = await page.screenshot(format="png")
-                fname = f"xft_{feature}_screenshot.png"
-                with open(fname, "wb") as f:
+                with open(f"xft_cs_try_{el['x']}_{el['y']}.png", "wb") as f:
                     f.write(base64.b64decode(screenshot_b64))
-                print(f"Saved screenshot to {fname}")
 
-                # Go back to dashboard
-                await tool({"action": "navigate", "url": "https://xft.cmbchina.com/#/index"})
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                print(f"Error clicking {feature}: {e}")
+        if not cs_found and cs_candidates:
+            print("\n[WARNING] No click revealed 在线客服. Trying text search fallback...")
+            result = await tool({"action": "click", "target_text": "客服"})
+            print(f"Text fallback click: {result.output}")
+            await asyncio.sleep(1.5)
+            page = await tool._maybe_get_page()
+            if page:
+                has_cs = await page.evaluate("""() => document.body.innerText.includes('在线客服')""")
+                if has_cs:
+                    cs_found = True
+        elif not cs_candidates:
+            print("No candidates found, trying target_text='客服'")
+            result = await tool({"action": "click", "target_text": "客服"})
+            print(f"Click result: {result.output}")
+            await asyncio.sleep(1.5)
+            page = await tool._maybe_get_page()
+            if page:
+                has_cs = await page.evaluate("""() => document.body.innerText.includes('在线客服')""")
+                if has_cs:
+                    cs_found = True
+
+        # Screenshot after clicking ?
+        if page:
+            screenshot_b64 = await page.screenshot(format="png")
+            with open("xft_after_help_click.png", "wb") as f:
+                f.write(base64.b64decode(screenshot_b64))
+            print("Saved screenshot to xft_after_help_click.png")
+
+        # Step 2: Click "在线客服"
+        print("\n--- Step 2: Clicking 在线客服 ---")
+        if cs_found:
+            result = await tool({"action": "click", "target_text": "在线客服"})
+            print(f"Click result: {result.output}")
+        else:
+            print("Skipping 在线客服 click - text was not revealed by any icon click")
+        await asyncio.sleep(2.0)
+
+        if page:
+            screenshot_b64 = await page.screenshot(format="png")
+            with open("xft_after_online_service.png", "wb") as f:
+                f.write(base64.b64decode(screenshot_b64))
+            print("Saved screenshot to xft_after_online_service.png")
+
+        # Get final page text
+        result = await tool({"action": "extract", "instruction": "get text"})
+        print(f"\nFinal page text: {result.output[:600]}")
 
         print("\nKeeping browser open for 15s...")
         await asyncio.sleep(15.0)

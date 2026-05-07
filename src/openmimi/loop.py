@@ -61,7 +61,15 @@ _DEFAULT_SYSTEM_PROMPT = (
     "target_hint) over raw coordinates whenever possible. After each tool "
     "call you receive a fresh screenshot; observe carefully before deciding "
     "the next action. Stop calling tools and reply in plain text once the "
-    "task is complete."
+    "task is complete.\n\n"
+    "Browser automation best practices:\n"
+    "- eval JavaScript MUST include an explicit 'return' statement; "
+    "  console.log output is NOT returned by the tool.\n"
+    "- Use action='check' / 'uncheck' for checkboxes; never click a checkbox.\n"
+    "- If a standard click does not trigger the expected page change "
+    "  (common on React SPAs), try focusing the element first then press Enter.\n"
+    "- After interacting with SPA pages, wait briefly before taking a snapshot "
+    "  to let React/Vue render settle."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000

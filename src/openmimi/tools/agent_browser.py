@@ -34,6 +34,7 @@ _TOOL_DESCRIPTION = (
     "If no ref is known, use 'target_text' for semantic text matching. "
     "Navigation: action='navigate' with 'url'. "
     "Tabs: action='tab_list' or action='tab_switch' with 'tab_index' (1-based). "
+    "Checkbox: use action='check' or 'uncheck' with 'ref' (never click checkboxes). "
     "Drag and drop: action='drag' with 'ref'+'to_ref' or 'target_text'+'to_target_text'. "
     "Low-level mouse control: action='mouse' with 'mouse_action' (move/down/up/wheel). "
     "Use mouse sequences (move -> down -> move -> up) for interactions that standard click "
@@ -41,7 +42,7 @@ _TOOL_DESCRIPTION = (
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
-_DEFAULT_TIMEOUT_S = 30.0
+_DEFAULT_TIMEOUT_S = 120.0
 _SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "agent_browser_screenshots"
 
 
@@ -89,6 +90,8 @@ class AgentBrowserTool(ToolBase):
                             "navigate",
                             "snapshot",
                             "click",
+                            "check",
+                            "uncheck",
                             "type",
                             "fill",
                             "press",
@@ -222,6 +225,8 @@ class AgentBrowserTool(ToolBase):
             "navigate": self._do_navigate,
             "snapshot": self._do_snapshot,
             "click": self._do_click,
+            "check": self._do_check,
+            "uncheck": self._do_uncheck,
             "type": self._do_type,
             "fill": self._do_fill,
             "press": self._do_press,
@@ -258,6 +263,14 @@ class AgentBrowserTool(ToolBase):
         await self._refresh_tabs()
         snapshot = await self._exec("snapshot", "--json")
         text, _ = self._parse_snapshot(snapshot.stdout)
+
+        # Retry once if page is still empty (slow initial load or first startup)
+        if "(empty page)" in text:
+            await asyncio.sleep(3)
+            await self._refresh_tabs()
+            snapshot = await self._exec("snapshot", "--json")
+            text, _ = self._parse_snapshot(snapshot.stdout)
+
         image = await self._take_screenshot()
         details = {
             "url": url,
@@ -310,6 +323,34 @@ class AgentBrowserTool(ToolBase):
             base64_image=image,
             details=details,
         )
+
+    async def _do_check(self, inp: dict[str, Any]) -> ToolResult:
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        if ref:
+            result = await self._exec("check", ref, "--json")
+        elif target_text:
+            result = await self._exec(
+                "find", "text", target_text, "check", "--json"
+            )
+        else:
+            return ToolResult(output="check requires 'ref' or 'target_text'")
+        image = await self._take_screenshot()
+        return ToolResult(output="Checked element", base64_image=image)
+
+    async def _do_uncheck(self, inp: dict[str, Any]) -> ToolResult:
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        if ref:
+            result = await self._exec("uncheck", ref, "--json")
+        elif target_text:
+            result = await self._exec(
+                "find", "text", target_text, "uncheck", "--json"
+            )
+        else:
+            return ToolResult(output="uncheck requires 'ref' or 'target_text'")
+        image = await self._take_screenshot()
+        return ToolResult(output="Unchecked element", base64_image=image)
 
     async def _do_type(self, inp: dict[str, Any]) -> ToolResult:
         ref = inp.get("ref")
