@@ -69,7 +69,10 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- If a standard click does not trigger the expected page change "
     "  (common on React SPAs), try focusing the element first then press Enter.\n"
     "- After interacting with SPA pages, wait briefly before taking a snapshot "
-    "  to let React/Vue render settle."
+    "  to let React/Vue render settle.\n"
+    "- The first browser navigate after starting can take 2-5 minutes on Windows "
+    "  while the Chromium daemon initialises. If it times out, retry the same "
+    "  navigate command once; the daemon will be ready."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000

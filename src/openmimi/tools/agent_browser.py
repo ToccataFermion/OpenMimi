@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ _TOOL_DESCRIPTION = (
 )
 
 _DEFAULT_TIMEOUT_S = 300.0
+_DAEMON_WARMUP_TIMEOUT_S = 600.0
 _SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "agent_browser_screenshots"
 
 
@@ -75,6 +77,8 @@ class AgentBrowserTool(ToolBase):
         # Keep shell=True: agent-browser daemon first-start is slow (~2 min)
         # but reliable. shell=False on .cmd causes fast failures.
         self._use_shell = sys.platform == "win32" and self._executable.lower().endswith((".cmd", ".bat"))
+        self._warmup_thread: threading.Thread | None = None
+        self._start_warmup()
 
     # ------------------------------------------------------------------ #
     #  Public API
@@ -567,7 +571,74 @@ class AgentBrowserTool(ToolBase):
     #  Helpers
     # ------------------------------------------------------------------ #
 
+    def _start_warmup(self) -> None:
+        """Fire a background thread that starts the agent-browser daemon.
+
+        On Windows the daemon can take 2-6 minutes to initialise on the first
+        `open` call.  By starting it eagerly in a background thread we give it
+        a head-start before the first real tool call arrives.
+        """
+        def _run() -> None:
+            try:
+                cmd = [
+                    self._executable,
+                    "open",
+                    "about:blank",
+                    "--json",
+                    "--session-name",
+                    self._session_name,
+                ]
+                if self._use_shell:
+                    subprocess.run(
+                        " ".join(cmd),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=_DAEMON_WARMUP_TIMEOUT_S,
+                        shell=True,
+                    )
+                else:
+                    subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=_DAEMON_WARMUP_TIMEOUT_S,
+                    )
+            except Exception:
+                pass
+
+        self._warmup_thread = threading.Thread(target=_run, daemon=True)
+        self._warmup_thread.start()
+
     async def _start_browser(self, url: str | None = None) -> None:
+        # Wait for background warmup (daemon cold-start is very slow on Windows)
+        if self._warmup_thread and self._warmup_thread.is_alive():
+            print(
+                "[agent-browser] waiting for daemon warmup...",
+                file=sys.stderr,
+                flush=True,
+            )
+            t0 = time.monotonic()
+            while self._warmup_thread.is_alive():
+                if time.monotonic() - t0 > _DAEMON_WARMUP_TIMEOUT_S:
+                    break
+                await asyncio.sleep(0.5)
+
+        # If the daemon is already responsive, just open the target URL.
+        try:
+            await self._exec("tab", "--json")
+            self._started = True
+            await self._refresh_tabs()
+            if url and url != "about:blank":
+                await self._exec("open", url, "--json")
+            return
+        except Exception:
+            pass
+
+        # Fallback: start the daemon inline.
         args = ["open", url or "about:blank"]
         args.extend(["--json", "--session-name", self._session_name])
         result = await self._exec(*args)
