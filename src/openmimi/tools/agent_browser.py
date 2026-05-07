@@ -34,7 +34,10 @@ _TOOL_DESCRIPTION = (
     "If no ref is known, use 'target_text' for semantic text matching. "
     "Navigation: action='navigate' with 'url'. "
     "Tabs: action='tab_list' or action='tab_switch' with 'tab_index' (1-based). "
-    "Mouse: action='mouse' with 'mouse_action' (move/down/up/wheel) and coordinates. "
+    "Drag and drop: action='drag' with 'ref'+'to_ref' or 'target_text'+'to_target_text'. "
+    "Low-level mouse control: action='mouse' with 'mouse_action' (move/down/up/wheel). "
+    "Use mouse sequences (move -> down -> move -> up) for interactions that standard click "
+    "cannot handle, such as dragging sliders, drawing, or any press-and-hold gesture. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 

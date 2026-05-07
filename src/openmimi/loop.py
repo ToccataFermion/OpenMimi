@@ -64,7 +64,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "task is complete."
 )
 
-_RESULT_SUMMARY_MAX_CHARS = 500
+_RESULT_SUMMARY_MAX_CHARS = 4000
 _OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
 _DEFAULT_TOOL_TIMEOUT_S = 10.0
 

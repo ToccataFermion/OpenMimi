@@ -8,6 +8,7 @@ implementations.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any
@@ -17,7 +18,8 @@ from .config import load_config
 from .config.schema import AppConfig
 from .llm import AnthropicClient
 from .llm.base import LLMClient
-from .loop import sampling_loop
+from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
+from .memory.site_store import SiteMemoryStore, extract_domain
 from .tools import AgentBrowserTool, ToolCollection
 from .utils.ids import new_session_id
 
@@ -34,11 +36,13 @@ class Orchestrator:
         llm: LLMClient,
         tools: ToolCollection,
         audit: JsonlAuditLogger | None = None,
+        memory: SiteMemoryStore | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
         self.tools = tools
         self.audit = audit
+        self.memory = memory
 
     @classmethod
     def from_env(
@@ -98,13 +102,21 @@ class Orchestrator:
             audit_dir=cfg.storage.audit_dir,
             screen_dir=cfg.storage.screen_dir,
         )
+        memory = SiteMemoryStore()
 
-        return cls(config=cfg, llm=llm, tools=tools, audit=audit)
+        return cls(config=cfg, llm=llm, tools=tools, audit=audit, memory=memory)
 
     async def run_task(self, task: str) -> dict[str, Any]:
         """Execute one user task end-to-end. Returns session id, messages, and final text."""
         session_id = new_session_id()
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
+        domain = extract_domain(task)
+
+        system = _DEFAULT_SYSTEM_PROMPT
+        if self.memory and domain:
+            mem_text = self.memory.format_for_prompt(domain)
+            if mem_text:
+                system = f"{_DEFAULT_SYSTEM_PROMPT}\n\n{mem_text}"
 
         try:
             await sampling_loop(
@@ -115,15 +127,61 @@ class Orchestrator:
                 audit=self.audit,
                 max_turns=self.config.max_turns,
                 only_n_most_recent_images=self.config.only_n_most_recent_images,
+                system=system,
             )
         finally:
             await self.tools.close_all()
+
+        if self.memory and domain:
+            try:
+                new_mem = await self._summarize_session(messages, domain)
+                if new_mem:
+                    merged = self.memory.merge(domain, new_mem)
+                    self.memory.save(domain, merged)
+            except Exception:
+                pass
 
         return {
             "session_id": session_id,
             "messages": messages,
             "final_text": _extract_last_assistant_text(messages),
         }
+
+    async def _summarize_session(
+        self,
+        messages: list[dict[str, Any]],
+        domain: str,
+    ) -> dict[str, Any] | None:
+        """Ask the LLM to summarize lessons learned from this session."""
+        recent = json.dumps(messages[-6:], ensure_ascii=False)
+        prompt = (
+            "You just finished a browser automation session. "
+            "Summarize the key lessons learned in this session. "
+            "Return ONLY a JSON object with this exact shape, no markdown, no explanation:\n"
+            '{"known_refs": {"@e1": "description"}, '
+            '"tips": ["tip1"], '
+            '"failure_patterns": ["pattern1"], '
+            '"success_paths": ["path1"]}\n'
+            "If nothing useful was learned, return {}.\n\n"
+            f"Recent conversation: {recent[:4000]}"
+        )
+        try:
+            response = await self.llm.create(
+                system="You are a session summarizer. Output only valid JSON.",
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                max_tokens=1024,
+            )
+            content = response.get("content", [])
+            text = _extract_text_from_response_content(content)
+            if not text:
+                return None
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return None
 
     async def run_chat_turn(
         self,
@@ -141,6 +199,15 @@ class Orchestrator:
         All tool audit rows for every turn share the same ``session_id``.
         """
         messages.append({"role": "user", "content": user_content})
+
+        system = _DEFAULT_SYSTEM_PROMPT
+        if self.memory:
+            domain = extract_domain(user_content)
+            if domain:
+                mem_text = self.memory.format_for_prompt(domain)
+                if mem_text:
+                    system = f"{_DEFAULT_SYSTEM_PROMPT}\n\n{mem_text}"
+
         await sampling_loop(
             messages=messages,
             tools=self.tools,
@@ -149,6 +216,7 @@ class Orchestrator:
             audit=self.audit,
             max_turns=self.config.max_turns,
             only_n_most_recent_images=self.config.only_n_most_recent_images,
+            system=system,
         )
         return _extract_last_assistant_text(messages)
 
@@ -175,6 +243,16 @@ def _coerce_positive_float(raw: str | None, fallback: float) -> float:
     return v if v > 0 else fallback
 
 
+def _extract_text_from_response_content(content: list[dict[str, Any]]) -> str:
+    """Extract text from LLM response content blocks."""
+    parts = [
+        c.get("text", "")
+        for c in content
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    return "\n".join(p for p in parts if p)
+
+
 def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
     """Pull all `text` blocks from the most recent assistant message."""
     for msg in reversed(messages):
@@ -191,6 +269,9 @@ def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
         if isinstance(content, str):
             return content
     return ""
+
+
+__all__ = ["Orchestrator"]
 
 
 __all__ = ["Orchestrator"]
