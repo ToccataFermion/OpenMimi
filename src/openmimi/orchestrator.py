@@ -18,7 +18,7 @@ from .config.schema import AppConfig
 from .llm import AnthropicClient
 from .llm.base import LLMClient
 from .loop import sampling_loop
-from .tools import BrowserTool, ToolCollection
+from .tools import AgentBrowserTool, ToolCollection
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
@@ -88,7 +88,7 @@ class Orchestrator:
 
         tools = ToolCollection()
         tools.register(
-            BrowserTool(
+            AgentBrowserTool(
                 download_dir=str(cfg.browser.download_dir),
                 viewport=(cfg.browser.viewport_width, cfg.browser.viewport_height),
             )

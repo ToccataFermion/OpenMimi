@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .base import ToolBase
+from .agent_browser import AgentBrowserTool
 from .browser import BrowserTool
 from .browser_schema import (
     BROWSER_TOOL_INPUT_ADAPTER,
@@ -27,6 +28,7 @@ from .errors import ErrorCode
 from .result import ToolResult
 
 __all__ = [
+    "AgentBrowserTool",
     "BROWSER_TOOL_INPUT_ADAPTER",
     "BrowserTool",
     "BrowserToolDetails",
