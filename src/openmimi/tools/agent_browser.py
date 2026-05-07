@@ -614,22 +614,10 @@ class AgentBrowserTool(ToolBase):
         self._warmup_thread.start()
 
     async def _start_browser(self, url: str | None = None) -> None:
-        # Wait for background warmup (daemon cold-start is very slow on Windows)
-        if self._warmup_thread and self._warmup_thread.is_alive():
-            print(
-                "[agent-browser] waiting for daemon warmup...",
-                file=sys.stderr,
-                flush=True,
-            )
-            t0 = time.monotonic()
-            while self._warmup_thread.is_alive():
-                if time.monotonic() - t0 > _DAEMON_WARMUP_TIMEOUT_S:
-                    break
-                await asyncio.sleep(0.5)
-
-        # If the daemon is already responsive, just open the target URL.
+        # If the daemon is already warm (background thread or previous session),
+        # just open the target URL directly.
         try:
-            await self._exec("tab", "--json")
+            await self._exec("tab", "--json", timeout=10.0)
             self._started = True
             await self._refresh_tabs()
             if url and url != "about:blank":
@@ -638,7 +626,9 @@ class AgentBrowserTool(ToolBase):
         except Exception:
             pass
 
-        # Fallback: start the daemon inline.
+        # Cold-start: open will initialise the daemon. On Windows this can take
+        # several minutes on the very first run, so we rely on the generous
+        # timeout set in loop.py for agent_browser calls.
         args = ["open", url or "about:blank"]
         args.extend(["--json", "--session-name", self._session_name])
         result = await self._exec(*args)
@@ -694,7 +684,7 @@ class AgentBrowserTool(ToolBase):
             pass
         return None
 
-    async def _exec(self, *args: str) -> Any:
+    async def _exec(self, *args: str, timeout: float | None = None) -> Any:
         """Run agent-browser CLI and return stdout/stderr.
 
         Uses subprocess.run in a thread-pool executor because
@@ -705,6 +695,8 @@ class AgentBrowserTool(ToolBase):
         shell = self._use_shell
         print(f"[agent-browser exec] {' '.join(cmd_list)}", file=sys.stderr, flush=True)
 
+        tout = timeout if timeout is not None else _DEFAULT_TIMEOUT_S
+
         def _run() -> subprocess.CompletedProcess[str]:
             if shell:
                 return subprocess.run(
@@ -713,7 +705,7 @@ class AgentBrowserTool(ToolBase):
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=_DEFAULT_TIMEOUT_S,
+                    timeout=tout,
                     shell=True,
                 )
             return subprocess.run(
@@ -722,13 +714,13 @@ class AgentBrowserTool(ToolBase):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=_DEFAULT_TIMEOUT_S,
+                timeout=tout,
             )
 
         loop = asyncio.get_event_loop()
         result = await asyncio.wait_for(
             loop.run_in_executor(None, _run),
-            timeout=_DEFAULT_TIMEOUT_S + 5.0,
+            timeout=tout + 5.0,
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()

@@ -190,6 +190,11 @@ async def sampling_loop(
             )
             t0 = time.monotonic()
             tout = _tool_run_timeout_seconds()
+            # The Chromium daemon can take several minutes to cold-start on
+            # Windows (especially the first time). Give the browser tool a
+            # longer leash so the LLM doesn't have to retry unnecessarily.
+            if tool_name == "agent_browser" and tout is not None:
+                tout = max(tout, 600.0)
             try:
                 run_coro = tools.run(tool_name, tool_input)
                 if tout is not None:
@@ -221,7 +226,7 @@ async def sampling_loop(
                 _tool_progress(
                     f"[tool] step {step}: {tool_name} TIMEOUT after {tout}s"
                 )
-                if tool_name == "browser":
+                if tool_name in ("browser", "agent_browser"):
                     bt = os.environ.get("OPENMIMI_BROWSER_TRACE", "").strip().lower()
                     if bt not in ("1", "true", "yes", "on"):
                         print(
