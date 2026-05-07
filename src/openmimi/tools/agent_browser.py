@@ -42,7 +42,7 @@ _TOOL_DESCRIPTION = (
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
-_DEFAULT_TIMEOUT_S = 120.0
+_DEFAULT_TIMEOUT_S = 300.0
 _SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "agent_browser_screenshots"
 
 
@@ -71,6 +71,9 @@ class AgentBrowserTool(ToolBase):
         self._active_tab_index = 1
         self._session_name = f"openmimi_{os.getpid()}_{int(time.time())}"
         _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        # npm .cmd wrappers on Windows need shell or full path.
+        # Keep shell=True: agent-browser daemon first-start is slow (~2 min)
+        # but reliable. shell=False on .cmd causes fast failures.
         self._use_shell = sys.platform == "win32" and self._executable.lower().endswith((".cmd", ".bat"))
 
     # ------------------------------------------------------------------ #
