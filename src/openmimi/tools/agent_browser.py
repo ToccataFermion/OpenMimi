@@ -73,10 +73,18 @@ class AgentBrowserTool(ToolBase):
         self._active_tab_index = 1
         self._session_name = f"openmimi_{os.getpid()}_{int(time.time())}"
         _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        # npm .cmd wrappers on Windows need shell or full path.
-        # Keep shell=True: agent-browser daemon first-start is slow (~2 min)
-        # but reliable. shell=False on .cmd causes fast failures.
-        self._use_shell = sys.platform == "win32" and self._executable.lower().endswith((".cmd", ".bat"))
+        # npm .cmd wrappers garble JavaScript quotes/metacharacters when
+        # shell=True (cmd.exe strips quotes, interprets parentheses, etc.).
+        # Bypass the .cmd wrapper and run the native .exe directly.
+        if sys.platform == "win32" and self._executable.lower().endswith((".cmd", ".bat")):
+            exe_path = Path(self._executable).parent / "node_modules" / "agent-browser" / "bin" / "agent-browser-win32-x64.exe"
+            if exe_path.exists():
+                self._executable = str(exe_path)
+                self._use_shell = False
+            else:
+                self._use_shell = True
+        else:
+            self._use_shell = False
         self._warmup_thread: threading.Thread | None = None
         self._start_warmup()
 
@@ -502,8 +510,20 @@ class AgentBrowserTool(ToolBase):
                 output="eval requires non-empty 'js' field", is_error=True
             )
         result = await self._exec("eval", js, "--json")
-        data = self._parse_data(result.stdout)
-        return ToolResult(output=json.dumps(data.get("result"), ensure_ascii=False, indent=2))
+        raw = self._parse_json(result.stdout)
+        if not isinstance(raw, dict):
+            return ToolResult(
+                output=f"Invalid eval response: {result.stdout[:200]}",
+                is_error=True,
+            )
+        if raw.get("success") is False:
+            err = raw.get("error") or "eval failed"
+            return ToolResult(output=f"Eval error: {err}", is_error=True)
+        data = raw.get("data", {})
+        result_value = data.get("result") if isinstance(data, dict) else None
+        return ToolResult(
+            output=json.dumps(result_value, ensure_ascii=False, indent=2)
+        )
 
     async def _do_batch(self, inp: dict[str, Any]) -> ToolResult:
         steps = inp.get("steps", [])
