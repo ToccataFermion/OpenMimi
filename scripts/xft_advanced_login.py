@@ -122,37 +122,35 @@ async def open_login_form(browser: AgentBrowserTool) -> bool:
 
 
 async def fill_login_form(browser: AgentBrowserTool) -> bool:
-    """Fill credentials using React-compatible value setter."""
+    """Fill credentials using react_fill for React-controlled inputs."""
     phone_num = os.environ.get('XFT_PHONE', '')
     password = os.environ.get('XFT_PASSWORD', '')
     if not phone_num or not password:
         log("ERROR: XFT_PHONE and XFT_PASSWORD environment variables must be set")
         return False
 
-    result = await browser({
-        "action": "eval",
-        "js": f"""
-            (() => {{
-                const inputs = Array.from(document.querySelectorAll('input.ant-input'));
-                const phone = inputs.find(el => el.type === 'text');
-                const pass = inputs.find(el => el.type === 'password');
-                const checkbox = document.querySelector('input.ant-checkbox-input');
-                function setReactValue(element, value) {{
-                    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    valueSetter.call(element, value);
-                    element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-                if (phone) setReactValue(phone, '{phone_num}');
-                if (pass) setReactValue(pass, '{password}');
-                if (checkbox && !checkbox.checked) checkbox.click();
-                return {{hasPhone: !!phone, hasPass: !!pass, hasCheckbox: !!checkbox}};
-            }})()
-        """,
+    # Use react_fill to properly set React-controlled input values
+    phone_result = await browser({
+        "action": "react_fill",
+        "ref": "@input.ant-input[type='text']",
+        "value": phone_num,
     })
-    data = json.loads(result.output or "{}")
-    log(f"Form fill: {json.dumps(data, ensure_ascii=False)}")
-    return data.get("hasPhone", False) and data.get("hasPass", False)
+    pass_result = await browser({
+        "action": "react_fill",
+        "ref": "@input.ant-input[type='password']",
+        "value": password,
+    })
+
+    # Check the agreement checkbox if present
+    checkbox_result = await browser({
+        "action": "eval",
+        "js": "(() => { const cb = document.querySelector('input.ant-checkbox-input'); if (cb && !cb.checked) cb.click(); return {checked: !!cb && cb.checked}; })()",
+    })
+
+    has_phone = not phone_result.is_error
+    has_pass = not pass_result.is_error
+    log(f"Form fill: phone={has_phone}, pass={has_pass}, checkbox={checkbox_result.output}")
+    return has_phone and has_pass
 
 
 async def submit_and_handle_captcha(browser: AgentBrowserTool, computer: ComputerTool, download_dir: str) -> bool:
