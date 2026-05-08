@@ -34,7 +34,7 @@ from .result import ToolResult
 _TOOL_DESCRIPTION = (
     "Operate a Chromium browser via agent-browser (Rust CLI). "
     "Core workflow: 1) Call action='snapshot' to get an accessibility tree with @eN refs; "
-    "2) Use those refs in action='click' / 'right_click' / 'double_click' / 'type' / 'fill' / 'hover' / 'drag' via the 'ref' field; "
+    "2) Use those refs in action='click' / 'right_click' / 'double_click' / 'type' / 'fill' / 'react_fill' / 'hover' / 'drag' via the 'ref' field; "
     "3) Call action='screenshot' when visual verification is needed. "
     "If no ref is known, use 'target_text' for semantic text matching. "
     "Navigation: action='navigate' with 'url', or 'back' / 'forward' / 'reload'. "
@@ -66,6 +66,10 @@ _TOOL_DESCRIPTION = (
     "Network modification: action='network_modify' with 'modify_action' can inject headers, "
     "block URLs by pattern, mock responses (fetch + XHR), or override User-Agent. Use this to bypass "
     "anti-bot detection or inject auth tokens into API requests. "
+    "React form fill: action='react_fill' with 'ref'/'target_text' and 'value' uses the "
+    "HTMLInputElement.prototype.value setter + dispatchEvent(input/change) pattern, which "
+    "is required for React/Vue controlled inputs that ignore direct value assignment. "
+    "Use react_fill instead of fill on React SPAs.\n"
     "Extract: action='extract' with 'instruction' retrieves structured data: 'get text', "
     "'headings', 'links', 'forms', 'tables', 'metadata', 'images'.\n"
     "Storage: action='storage' with 'storage_action' (get/set/delete/clear) and 'storage_type' "
@@ -377,6 +381,7 @@ class AgentBrowserTool(ToolBase):
                             "uncheck",
                             "type",
                             "fill",
+                            "react_fill",
                             "press",
                             "hover",
                             "scroll",
@@ -692,6 +697,7 @@ class AgentBrowserTool(ToolBase):
             "uncheck": self._do_uncheck,
             "type": self._do_type,
             "fill": self._do_fill,
+            "react_fill": self._do_react_fill,
             "press": self._do_press,
             "hover": self._do_hover,
             "scroll": self._do_scroll,
@@ -1063,6 +1069,92 @@ class AgentBrowserTool(ToolBase):
             output=f"Filled with {len(value)} character(s)",
             base64_image=image,
         )
+
+    async def _do_react_fill(self, inp: dict[str, Any]) -> ToolResult:
+        """Fill an input using React-aware value setting (prototype setter + events)."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        value = str(inp.get("value", ""))
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="react_fill requires 'ref' or 'target_text'", is_error=True)
+        if not value:
+            return ToolResult(output="react_fill requires 'value'", is_error=True)
+
+        if ref:
+            css_selector = ref.lstrip("@")
+            js = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(css_selector)});
+                if (!el) return {{error: 'element not found'}};
+                const tag = el.tagName.toLowerCase();
+                if (tag === 'input' || tag === 'textarea') {{
+                    const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                                       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                    if (descriptor && descriptor.set) {{
+                        descriptor.set.call(el, {json.dumps(value)});
+                    }} else {{
+                        el.value = {json.dumps(value)};
+                    }}
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return {{ok: true, tag: tag, method: 'prototype_setter'}};
+                }} else if (tag === 'select') {{
+                    el.value = {json.dumps(value)};
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return {{ok: true, tag: tag, method: 'select_value'}};
+                }}
+                return {{error: 'unsupported tag: ' + tag}};
+            }})()
+            """
+        else:
+            js = f"""
+            (() => {{
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                let el;
+                while (el = walker.nextNode()) {{
+                    if ((el.innerText || el.textContent || '').trim().includes({json.dumps(target_text)})) {{
+                        const input = el.querySelector('input, textarea, select');
+                        if (!input) return {{error: 'no input found inside matched element'}};
+                        const tag = input.tagName.toLowerCase();
+                        if (tag === 'input' || tag === 'textarea') {{
+                            const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
+                                               Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                            if (descriptor && descriptor.set) {{
+                                descriptor.set.call(input, {json.dumps(value)});
+                            }} else {{
+                                input.value = {json.dumps(value)};
+                            }}
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return {{ok: true, tag: tag, method: 'prototype_setter'}};
+                        }} else if (tag === 'select') {{
+                            input.value = {json.dumps(value)};
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return {{ok: true, tag: tag, method: 'select_value'}};
+                        }}
+                        return {{error: 'unsupported tag: ' + tag}};
+                    }}
+                }}
+                return {{error: 'element not found'}};
+            }})()
+            """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(
+                    output=f"react_fill failed: {result_value['error']}", is_error=True
+                )
+            image = await self._take_screenshot()
+            return ToolResult(
+                output=f"React-filled {len(value)} character(s) via {result_value.get('method', 'unknown')}",
+                base64_image=image,
+                details=result_value,
+            )
+        except Exception as exc:
+            return ToolResult(output=f"react_fill error: {exc}", is_error=True)
 
     async def _do_press(self, inp: dict[str, Any]) -> ToolResult:
         key = inp.get("key", "Enter")
