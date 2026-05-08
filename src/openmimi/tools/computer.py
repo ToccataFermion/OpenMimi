@@ -33,7 +33,7 @@ _TOOL_DESCRIPTION = (
     "After each action a fresh screenshot is returned so the model can observe state.\n\n"
     "Action reference:\n"
     "- screenshot: capture the entire desktop\n"
-    "- mouse_move x y: move cursor to (x, y)\n"
+    "- mouse_move x y [humanize=false] [steps=20] [delay_ms=10]: move cursor to (x, y). Set humanize=true for human-like Bezier trajectory with acceleration/deceleration.\n"
     "- mouse_click [x y] [button=left|right]: click at coordinates or current position\n"
     "- mouse_down [button=left|right]: press and hold mouse button at current position\n"
     "- mouse_up [button=left|right]: release mouse button at current position\n"
@@ -336,7 +336,15 @@ class ComputerTool(ToolBase):
                     },
                     "steps": {
                         "type": "integer",
-                        "description": "Number of intermediate points for drag smoothing (default 20).",
+                        "description": "Number of intermediate points for drag smoothing or humanized mouse_move (default 20).",
+                    },
+                    "delay_ms": {
+                        "type": "integer",
+                        "description": "Delay between steps in milliseconds for drag or humanized mouse_move (default 10).",
+                    },
+                    "humanize": {
+                        "type": "boolean",
+                        "description": "Use human-like Bezier trajectory for mouse_move instead of instant jump (default false).",
                     },
                     "milliseconds": {
                         "type": "integer",
@@ -499,6 +507,17 @@ class ComputerTool(ToolBase):
     async def _do_mouse_move(self, inp: dict[str, Any]) -> ToolResult:
         x = inp.get("x", 0)
         y = inp.get("y", 0)
+        humanize = inp.get("humanize", False)
+
+        if humanize:
+            steps = max(2, min(inp.get("steps", 20), 200))
+            delay_ms = max(1, min(inp.get("delay_ms", 10), 500))
+            point = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+            track = self._generate_human_trajectory(point.x, point.y, x, y, steps, delay_ms)
+            await self._execute_human_movement(track, delay_ms)
+            return ToolResult(output=f"Mouse human-moved to ({x}, {y}) via {len(track)} points")
+
         abs_x, abs_y = _scale_to_abs(x, y)
         inp_struct = _INPUT()
         inp_struct.type = INPUT_MOUSE
@@ -559,6 +578,64 @@ class ComputerTool(ToolBase):
         self._send_mouse_event(up_flag)
         return ToolResult(output=f"Mouse {button} up")
 
+    def _generate_human_trajectory(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, steps: int, delay_ms: int
+    ) -> list[tuple[int, int]]:
+        """Generate a human-like mouse trajectory with acceleration/deceleration."""
+        import random
+        distance = ((end_x - start_x) ** 2 + (end_y - start_y) ** 2) ** 0.5
+        if distance < 1:
+            return [(end_x, end_y)]
+
+        track: list[tuple[int, int]] = []
+        current_dist = 0.0
+        mid = distance * 0.8
+        t_step = 0.2
+        velocity = 0.0
+
+        while current_dist < distance:
+            if current_dist < mid:
+                accel = random.uniform(1.5, 2.5)
+            else:
+                accel = random.uniform(-2.5, -1.5)
+            v0 = velocity
+            velocity = max(0.0, v0 + accel * t_step)
+            move = v0 * t_step + 0.5 * accel * t_step * t_step
+            move = max(0.5, move + random.uniform(-0.5, 0.5))
+            current_dist += move
+            ratio = min(1.0, current_dist / distance)
+            bx = int(start_x + (end_x - start_x) * ratio)
+            by = int(start_y + (end_y - start_y) * ratio)
+            jitter_y = random.randint(-2, 2)
+            track.append((bx, by + jitter_y))
+
+        if not track or track[-1] != (end_x, end_y):
+            track.append((end_x, end_y))
+
+        deduped = [track[0]]
+        for pt in track[1:]:
+            if pt != deduped[-1]:
+                deduped.append(pt)
+        return deduped
+
+    async def _execute_human_movement(
+        self, track: list[tuple[int, int]], delay_ms: int
+    ) -> None:
+        """Execute a generated trajectory with randomized timing."""
+        import random
+        for bx, by in track:
+            await self._do_mouse_move({"x": bx, "y": by})
+            step_delay = delay_ms * random.uniform(0.7, 1.3)
+            if random.random() < 0.05:
+                step_delay += random.randint(20, 60)
+            time.sleep(step_delay / 1000)
+        # Small random wiggle near target
+        for _ in range(random.randint(0, 2)):
+            wiggle_x = track[-1][0] + random.randint(-2, 2)
+            wiggle_y = track[-1][1] + random.randint(-1, 1)
+            await self._do_mouse_move({"x": wiggle_x, "y": wiggle_y})
+            time.sleep(random.uniform(0.05, 0.15))
+
     async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
         """Drag from (x,y) to (end_x,end_y) with human-like trajectory.
 
@@ -567,7 +644,6 @@ class ComputerTool(ToolBase):
         pauses.  This mimics real human arm movement and helps evade
         behavioural biometrics on slider CAPTCHAs.
         """
-        import random
         # Accept both (x,y) and (start_x,start_y) for the start point
         start_x = inp.get("x") if "x" in inp else inp.get("start_x", 0)
         start_y = inp.get("y") if "y" in inp else inp.get("start_y", 0)
@@ -588,58 +664,8 @@ class ComputerTool(ToolBase):
             await self._do_mouse_up({"button": button})
             return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
-        # --- Physics-based trajectory generation ---
-        # Acceleration phase for first ~80% of distance, deceleration for rest.
-        # Based on research of human mouse movement patterns for slider CAPTCHAs.
-        track: list[tuple[int, int]] = []
-        current_dist = 0.0
-        mid = distance * 0.8
-        t_step = 0.2
-        velocity = 0.0
-
-        while current_dist < distance:
-            if current_dist < mid:
-                accel = random.uniform(1.5, 2.5)  # acceleration
-            else:
-                accel = random.uniform(-2.5, -1.5)  # deceleration
-            v0 = velocity
-            velocity = max(0.0, v0 + accel * t_step)
-            move = v0 * t_step + 0.5 * accel * t_step * t_step
-            move = max(0.5, move + random.uniform(-0.5, 0.5))
-            current_dist += move
-            ratio = min(1.0, current_dist / distance)
-            bx = int(start_x + (end_x - start_x) * ratio)
-            by = int(start_y + (end_y - start_y) * ratio)
-            # Add slight perpendicular jitter so the path isn't perfectly straight
-            jitter_y = random.randint(-2, 2)
-            track.append((bx, by + jitter_y))
-
-        # Ensure we end exactly at the target
-        if not track or track[-1] != (end_x, end_y):
-            track.append((end_x, end_y))
-
-        # Deduplicate consecutive identical points
-        deduped = [track[0]]
-        for pt in track[1:]:
-            if pt != deduped[-1]:
-                deduped.append(pt)
-
-        # Execute movement
-        for i, (bx, by) in enumerate(deduped):
-            await self._do_mouse_move({"x": bx, "y": by})
-            # Base delay with slight variation
-            step_delay = delay_ms * random.uniform(0.7, 1.3)
-            # Occasional micro-pause (5% chance)
-            if random.random() < 0.05:
-                step_delay += random.randint(20, 60)
-            time.sleep(step_delay / 1000)
-
-        # Small random wiggle near target (human correction)
-        for _ in range(random.randint(0, 2)):
-            wiggle_x = end_x + random.randint(-2, 2)
-            wiggle_y = end_y + random.randint(-1, 1)
-            await self._do_mouse_move({"x": wiggle_x, "y": wiggle_y})
-            time.sleep(random.uniform(0.05, 0.15))
+        track = self._generate_human_trajectory(start_x, start_y, end_x, end_y, steps, delay_ms)
+        await self._execute_human_movement(track, delay_ms)
 
         # Final position
         await self._do_mouse_move({"x": end_x, "y": end_y})
@@ -800,7 +826,16 @@ class ComputerTool(ToolBase):
             h, w = template.shape[:2]
             cx = max_loc[0] + w // 2
             cy = max_loc[1] + h // 2
-            self._mouse_click(cx, cy, button=button)
+            await self._do_mouse_move({"x": cx, "y": cy})
+            time.sleep(0.05)
+            down_flag, up_flag = {
+                "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+                "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+                "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            }.get(button, (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+            self._send_mouse_event(down_flag)
+            time.sleep(0.05)
+            self._send_mouse_event(up_flag)
             return ToolResult(
                 output=f"Clicked template at ({cx}, {cy}) with confidence {max_val:.3f}",
                 details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h},
@@ -1191,10 +1226,17 @@ class ComputerTool(ToolBase):
                 )
 
             cx, cy, matched_text = best_match
-            self._send_mouse_move(cx, cy)
-            await asyncio.sleep(0.05)
-            self._send_mouse_click(button)
-            await asyncio.sleep(0.1)
+            await self._do_mouse_move({"x": cx, "y": cy})
+            time.sleep(0.05)
+            down_flag, up_flag = {
+                "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+                "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+                "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            }.get(button, (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+            self._send_mouse_event(down_flag)
+            time.sleep(0.05)
+            self._send_mouse_event(up_flag)
+            time.sleep(0.1)
             image = await self._take_screenshot()
             return ToolResult(
                 output=f"Clicked on text '{matched_text}' at ({cx}, {cy}) with {button} button",
