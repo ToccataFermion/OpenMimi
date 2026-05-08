@@ -63,6 +63,8 @@ _TOOL_DESCRIPTION = (
     "matching on the page screenshot to find elements by visual appearance. Optional "
     "'click'=true to click on the matched region. Useful for canvas UIs, custom icons, "
     "or when DOM selectors are unreliable.\n"
+    "Human-like scroll: action='human_scroll' performs scroll in multiple small steps with "
+    "random pauses between each step, simulating human reading behavior and reducing bot detection.\n"
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "wait_for_disappear: action='wait_for_disappear' with 'ref', 'target_text', or 'text' waits until "
@@ -435,6 +437,7 @@ class AgentBrowserTool(ToolBase):
                             "key_combo",
                             "hover",
                             "scroll",
+                            "human_scroll",
                             "screenshot",
                             "extract",
                             "select",
@@ -757,6 +760,7 @@ class AgentBrowserTool(ToolBase):
             "key_combo": self._do_key_combo,
             "hover": self._do_hover,
             "scroll": self._do_scroll,
+            "human_scroll": self._do_human_scroll,
             "screenshot": self._do_screenshot,
             "extract": self._do_extract,
             "select": self._do_select,
@@ -1290,6 +1294,40 @@ class AgentBrowserTool(ToolBase):
         image = await self._take_screenshot()
         return ToolResult(
             output=f"Scrolled {direction} {amount}px",
+            base64_image=image,
+        )
+
+    async def _do_human_scroll(self, inp: dict[str, Any]) -> ToolResult:
+        """Scroll in multiple small steps with random pauses, simulating human reading."""
+        direction = inp.get("direction", "down")
+        amount = inp.get("amount", 500)
+        steps = inp.get("steps", 0)
+        pause_ms = inp.get("pause_ms", 0)
+
+        if steps <= 0:
+            # Randomize steps between 5 and 12 based on amount
+            steps = max(5, min(12, amount // 80))
+        if pause_ms <= 0:
+            pause_ms = random.randint(80, 250)
+
+        step_amount = amount // steps
+        direction_map = {"down": "down", "up": "up", "left": "left", "right": "right"}
+        scroll_dir = direction_map.get(direction, "down")
+
+        for _ in range(steps):
+            jittered_amount = int(step_amount * random.uniform(0.7, 1.3))
+            jittered_amount = max(10, jittered_amount)
+            try:
+                await self._exec("scroll", scroll_dir, str(jittered_amount), "--json")
+            except Exception:
+                pass
+            # Random pause with jitter
+            delay = (pause_ms * random.uniform(0.7, 1.3)) / 1000.0
+            await asyncio.sleep(max(0.05, delay))
+
+        image = await self._take_screenshot()
+        return ToolResult(
+            output=f"Human-scrolled {direction} ~{amount}px in {steps} steps",
             base64_image=image,
         )
 

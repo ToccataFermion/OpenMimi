@@ -158,6 +158,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  Use modify_action='user_agent' with user_agent='Mozilla/5.0 ...' to set a realistic UA.\n"
     "- agent_browser clear_cache: wipe cookies, localStorage, and sessionStorage to reset state.\n"
     "- agent_browser scroll_into_view: bring an element into the viewport before interacting with it.\n"
+    "- agent_browser human_scroll: scroll in multiple small steps with random pauses, "
+    "  simulating human reading behavior and reducing bot detection signatures.\n"
     "- agent_browser page_source: retrieve raw HTML for parsing or debugging.\n"
     "- agent_browser get_url: return the current page URL without eval.\n"
     "- agent_browser get_title: return the current page title without eval.\n"
