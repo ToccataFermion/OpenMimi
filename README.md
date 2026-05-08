@@ -27,14 +27,19 @@ LLM <-> sampling_loop <-> ToolCollection
 ```bash
 pip install -e .
 
-# Start multi-turn chat REPL (shortest command)
+# Start multi-turn chat REPL — works from any folder
 mimi
 
 # Or use the full CLI
 openmimi chat          # Multi-turn REPL
 openmimi run "task"    # Single task execution
 openmimi replay <id>   # Replay a session
+```
 
+> **Development mode** (no install needed):  
+> On Windows, double-click `mimi.bat` in the project folder, or run `python -m openmimi`.
+
+```bash
 # Set credentials for xft demo (optional)
 export XFT_PHONE="your_phone"
 export XFT_PASSWORD="your_password"
