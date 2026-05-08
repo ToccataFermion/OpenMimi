@@ -478,9 +478,10 @@ class ComputerTool(ToolBase):
     async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
         """Drag from (x,y) to (end_x,end_y) with human-like trajectory.
 
-        Uses ease-in-out velocity with micro-pauses and slight overshoot
-        to mimic real human mouse movement, which helps evade behavioral
-        biometrics detection on slider CAPTCHAs.
+        Uses physics-based acceleration/deceleration (accelerate for ~80% of
+        distance, decelerate for remaining ~20%) with random noise and micro-
+        pauses.  This mimics real human arm movement and helps evade
+        behavioural biometrics on slider CAPTCHAs.
         """
         import random
         # Accept both (x,y) and (start_x,start_y) for the start point
@@ -498,47 +499,63 @@ class ComputerTool(ToolBase):
         await self._do_mouse_down({"button": button})
         time.sleep(0.05)
 
-        # Human-like trajectory generation
-        # Control point with random offset for curved path
-        cx = (start_x + end_x) // 2 + random.randint(-40, 40)
-        cy = (start_y + end_y) // 2 + random.randint(-15, 15)
+        distance = ((end_x - start_x) ** 2 + (end_y - start_y) ** 2) ** 0.5
+        if distance < 1:
+            await self._do_mouse_up({"button": button})
+            return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
-        # Slight overshoot target for realism, then correct back
-        overshoot = random.randint(3, 8)
-        overshoot_x = end_x + (overshoot if end_x >= start_x else -overshoot)
-        overshoot_y = end_y + random.randint(-3, 3)
+        # --- Physics-based trajectory generation ---
+        # Acceleration phase for first ~80% of distance, deceleration for rest.
+        # Based on research of human mouse movement patterns for slider CAPTCHAs.
+        track: list[tuple[int, int]] = []
+        current_dist = 0.0
+        mid = distance * 0.8
+        t_step = 0.2
+        velocity = 0.0
 
-        # Generate points along quadratic bezier
-        points = []
-        for i in range(steps + 1):
-            t = i / steps
-            bx = int((1 - t) ** 2 * start_x + 2 * (1 - t) * t * cx + t ** 2 * overshoot_x)
-            by = int((1 - t) ** 2 * start_y + 2 * (1 - t) * t * cy + t ** 2 * overshoot_y)
-            points.append((bx, by))
-        # Correct overshoot in final steps
-        correct_steps = min(5, steps // 10)
-        if correct_steps > 0:
-            for i in range(correct_steps):
-                t = (i + 1) / (correct_steps + 1)
-                bx = int(points[-correct_steps - 1][0] + t * (end_x - points[-correct_steps - 1][0]))
-                by = int(points[-correct_steps - 1][1] + t * (end_y - points[-correct_steps - 1][1]))
-                points[-correct_steps + i] = (bx, by)
-            points[-1] = (end_x, end_y)
+        while current_dist < distance:
+            if current_dist < mid:
+                accel = random.uniform(1.5, 2.5)  # acceleration
+            else:
+                accel = random.uniform(-2.5, -1.5)  # deceleration
+            v0 = velocity
+            velocity = max(0.0, v0 + accel * t_step)
+            move = v0 * t_step + 0.5 * accel * t_step * t_step
+            move = max(0.5, move + random.uniform(-0.5, 0.5))
+            current_dist += move
+            ratio = min(1.0, current_dist / distance)
+            bx = int(start_x + (end_x - start_x) * ratio)
+            by = int(start_y + (end_y - start_y) * ratio)
+            # Add slight perpendicular jitter so the path isn't perfectly straight
+            jitter_y = random.randint(-2, 2)
+            track.append((bx, by + jitter_y))
 
-        # Execute movement with ease-in-out timing (slower at start/end, faster in middle)
-        for i in range(1, len(points)):
-            bx, by = points[i]
-            bx += random.randint(-1, 1)
-            by += random.randint(-1, 1)
+        # Ensure we end exactly at the target
+        if not track or track[-1] != (end_x, end_y):
+            track.append((end_x, end_y))
+
+        # Deduplicate consecutive identical points
+        deduped = [track[0]]
+        for pt in track[1:]:
+            if pt != deduped[-1]:
+                deduped.append(pt)
+
+        # Execute movement
+        for i, (bx, by) in enumerate(deduped):
             await self._do_mouse_move({"x": bx, "y": by})
-            # Ease-in-out delay: slower at boundaries, faster in middle
-            t = i / len(points)
-            ease = 1.0 - abs(2 * t - 1)  # 0 at start, 1 at middle, 0 at end
-            step_delay = delay_ms * (0.6 + 0.4 * (1 - ease))  # vary by ±40%
+            # Base delay with slight variation
+            step_delay = delay_ms * random.uniform(0.7, 1.3)
             # Occasional micro-pause (5% chance)
             if random.random() < 0.05:
                 step_delay += random.randint(20, 60)
             time.sleep(step_delay / 1000)
+
+        # Small random wiggle near target (human correction)
+        for _ in range(random.randint(0, 2)):
+            wiggle_x = end_x + random.randint(-2, 2)
+            wiggle_y = end_y + random.randint(-1, 1)
+            await self._do_mouse_move({"x": wiggle_x, "y": wiggle_y})
+            time.sleep(random.uniform(0.05, 0.15))
 
         # Final position
         await self._do_mouse_move({"x": end_x, "y": end_y})
