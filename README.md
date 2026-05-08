@@ -112,7 +112,7 @@ python scripts/xft_advanced_login.py
 | Action | Description |
 |--------|-------------|
 | `screenshot` | Capture primary monitor |
-| `mouse_move` [humanize] / `mouse_click` / `mouse_drag` | Mouse control with human-like trajectories |
+| `mouse_move` [humanize] / `mouse_click` [wander] / `mouse_drag` | Mouse control with human-like trajectories |
 | `mouse_scroll` / `mouse_double_click` | Extended mouse actions |
 | `key_press` / `key_combo` / `type` | Keyboard input (Unicode-aware via clipboard paste) |
 | `cursor_position` | Get current mouse coordinates |

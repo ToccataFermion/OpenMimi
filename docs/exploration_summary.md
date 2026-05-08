@@ -178,6 +178,7 @@ DL 解法流程：
 | 动作 | 说明 |
 |------|------|
 | `mouse_move` humanize | 新增 `humanize=true` 参数，使用 Bezier 轨迹 + 加减速曲线模拟人类鼠标移动，替代瞬间跳跃 |
+| `mouse_click` wander | 新增 `wander=true` 参数，点击前在目标附近进行 2-4 次随机微动，模拟人类瞄准行为，增强反检测 |
 | `batch` | 批量执行多个桌面动作（`steps` 数组），`bail` 控制遇错是否中断，减少 LLM 往返 |
 
 ### 5.2 AgentBrowserTool

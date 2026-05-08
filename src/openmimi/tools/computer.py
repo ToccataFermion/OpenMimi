@@ -34,13 +34,13 @@ _TOOL_DESCRIPTION = (
     "Action reference:\n"
     "- screenshot: capture the entire desktop\n"
     "- mouse_move x y [humanize=false] [steps=20] [delay_ms=10]: move cursor to (x, y). Set humanize=true for human-like Bezier trajectory with acceleration/deceleration.\n"
-    "- mouse_click [x y] [button=left|right]: click at coordinates or current position\n"
+    "- mouse_click [x y] [button=left|right] [wander=false]: click at coordinates or current position. Set wander=true for human-like micro-movements near target before clicking.\n"
     "- mouse_down [button=left|right]: press and hold mouse button at current position\n"
     "- mouse_up [button=left|right]: release mouse button at current position\n"
     "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20] [delay_ms=10]: drag with bezier smoothing. "
     "For slider CAPTCHAs use steps=80 and delay_ms=25 so the page JavaScript can track the movement.\n"
     "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
-    "- mouse_double_click [x y] [button=left|right]: double-click at coordinates or current position\n"
+    "- mouse_double_click [x y] [button=left|right] [wander=false]: double-click at coordinates or current position. Set wander=true for human-like micro-movements before clicking.\n"
     "- cursor_position: return current mouse cursor screen coordinates\n"
     "- focus_window title: bring the first window whose title contains 'title' to the foreground\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
@@ -307,6 +307,10 @@ class ComputerTool(ToolBase):
                         "enum": ["left", "right", "middle"],
                         "description": "Mouse button for click (default left).",
                     },
+                    "wander": {
+                        "type": "boolean",
+                        "description": "For mouse_click / mouse_double_click: make small random micro-movements near target before clicking to simulate human aiming (default false).",
+                    },
                     "amount": {
                         "type": "integer",
                         "description": "Scroll amount in wheel clicks (positive = up, negative = down).",
@@ -543,13 +547,23 @@ class ComputerTool(ToolBase):
         return ToolResult(output=f"Mouse moved to ({x}, {y})")
 
     async def _do_mouse_click(self, inp: dict[str, Any]) -> ToolResult:
+        import random
         x = inp.get("x")
         y = inp.get("y")
         button = inp.get("button", "left")
+        wander = inp.get("wander", False)
         # Move first if coordinates provided
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})
             time.sleep(0.05)
+            if wander:
+                for _ in range(random.randint(2, 4)):
+                    wx = x + random.randint(-8, 8)
+                    wy = y + random.randint(-8, 8)
+                    await self._do_mouse_move({"x": wx, "y": wy})
+                    time.sleep(random.uniform(0.03, 0.12))
+                await self._do_mouse_move({"x": x, "y": y})
+                time.sleep(random.uniform(0.05, 0.15))
         down_flag, up_flag = {
             "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -687,12 +701,22 @@ class ComputerTool(ToolBase):
         return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
     async def _do_mouse_double_click(self, inp: dict[str, Any]) -> ToolResult:
+        import random
         x = inp.get("x")
         y = inp.get("y")
         button = inp.get("button", "left")
+        wander = inp.get("wander", False)
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})
             time.sleep(0.05)
+            if wander:
+                for _ in range(random.randint(2, 4)):
+                    wx = x + random.randint(-8, 8)
+                    wy = y + random.randint(-8, 8)
+                    await self._do_mouse_move({"x": wx, "y": wy})
+                    time.sleep(random.uniform(0.03, 0.12))
+                await self._do_mouse_move({"x": x, "y": y})
+                time.sleep(random.uniform(0.05, 0.15))
         down_flag, up_flag = {
             "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
