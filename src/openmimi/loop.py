@@ -84,6 +84,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- Use action='get_box' with ref or target_text to get an element's exact "
     "  viewport coordinates (x, y, width, height). This is essential for computing "
     "  screen coordinates before OS-level mouse actions like computer.mouse_drag.\n"
+    "- Use action='visual_locate' with template_path to find elements by visual "
+    "  appearance when DOM selectors are unreliable (canvas UIs, custom icons).\n"
     "- After interacting with SPA pages, wait briefly before taking a snapshot "
     "  to let React/Vue render settle.\n"
     "- The first browser navigate after starting can take 2-5 minutes on Windows "

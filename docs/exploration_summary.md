@@ -91,6 +91,7 @@ DL 解法流程：
 | `pdf` | 保存当前页面为 PDF（CDP printToPDF） |
 | `page_source` | 获取当前页面原始 HTML |
 | `wait_for_navigation` | 轮询等待 URL 变化（SPA 友好） |
+| `visual_locate` | OpenCV 模板匹配：通过截图视觉定位元素（支持自动点击） |
 | `extract` 增强 | 结构化提取：headings, links, forms, tables, metadata, images |
 | `emulate_device` | 模拟移动设备：iPhone 14, Pixel 7, iPad Mini（CDP + JS fallback） |
 

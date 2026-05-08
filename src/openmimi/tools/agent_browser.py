@@ -55,6 +55,10 @@ _TOOL_DESCRIPTION = (
     "Wait for network idle: action='wait_for_network_idle' waits until no fetch/XHR requests are active for idle_duration_ms (default 2000). "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
     "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
+    "Visual locate: action='visual_locate' with 'template_path' uses OpenCV template "
+    "matching on the page screenshot to find elements by visual appearance. Optional "
+    "'click'=true to click on the matched region. Useful for canvas UIs, custom icons, "
+    "or when DOM selectors are unreliable.\n"
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
@@ -394,6 +398,7 @@ class AgentBrowserTool(ToolBase):
                             "focus",
                             "clipboard",
                             "get_box",
+                            "visual_locate",
                             "wait_for",
                             "network_log",
                             "network_modify",
@@ -504,6 +509,14 @@ class AgentBrowserTool(ToolBase):
                     "annotate": {
                         "type": "boolean",
                         "description": "Add numbered labels to screenshot for vision model reference (action='screenshot' only).",
+                    },
+                    "template_path": {
+                        "type": "string",
+                        "description": "Path to a template image (PNG/JPG) for action='visual_locate'.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Minimum confidence threshold for visual_locate (0.0-1.0, default 0.8).",
                     },
                     "options": {
                         "type": "array",
@@ -699,6 +712,7 @@ class AgentBrowserTool(ToolBase):
             "focus": self._do_focus,
             "clipboard": self._do_clipboard,
             "get_box": self._do_get_box,
+            "visual_locate": self._do_visual_locate,
             "wait_for": self._do_wait_for,
             "network_log": self._do_network_log,
             "network_modify": self._do_network_modify,
@@ -1727,6 +1741,58 @@ class AgentBrowserTool(ToolBase):
                 output=f"get_box failed for {selector}: {exc}", is_error=True
             )
 
+    async def _do_visual_locate(self, inp: dict[str, Any]) -> ToolResult:
+        """Find an element on the page by visual template matching using OpenCV."""
+        template_path = str(inp.get("template_path", ""))
+        confidence = float(inp.get("confidence", 0.8))
+        should_click = inp.get("click", False)
+        if not template_path:
+            return ToolResult(output="visual_locate requires 'template_path'", is_error=True)
+        try:
+            import cv2
+            import numpy as np
+        except ImportError as exc:
+            return ToolResult(output=f"visual_locate requires opencv-python: {exc}", is_error=True)
+
+        try:
+            png_bytes = await self._take_screenshot_raw()
+            if png_bytes is None:
+                return ToolResult(output="Failed to capture screenshot", is_error=True)
+            screen = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
+            template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+            if screen is None:
+                return ToolResult(output="Failed to decode screenshot", is_error=True)
+            if template is None:
+                return ToolResult(output=f"Failed to load template: {template_path}", is_error=True)
+
+            result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+            _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(result)
+            if max_val >= confidence:
+                h, w = template.shape[:2]
+                cx = max_loc[0] + w // 2
+                cy = max_loc[1] + h // 2
+                if should_click:
+                    await self._exec("mouse", "move", str(cx), str(cy), "--json")
+                    await asyncio.sleep(0.05)
+                    await self._exec("mouse", "down", "left", "--json")
+                    await asyncio.sleep(0.05)
+                    await self._exec("mouse", "up", "left", "--json")
+                    await asyncio.sleep(0.1)
+                image = await self._take_screenshot()
+                return ToolResult(
+                    output=f"Found template at ({cx}, {cy}) with confidence {max_val:.3f}",
+                    base64_image=image,
+                    details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h, "clicked": should_click},
+                )
+            image = await self._take_screenshot()
+            return ToolResult(
+                output=f"Template not found (best confidence: {max_val:.3f}, threshold: {confidence})",
+                is_error=True,
+                base64_image=image,
+            )
+        except Exception as exc:
+            return ToolResult(output=f"visual_locate error: {exc}", is_error=True)
+
     async def _do_wait_for(self, inp: dict[str, Any]) -> ToolResult:
         """Wait for an element or text to appear on the page."""
         ref = inp.get("ref")
@@ -2648,6 +2714,12 @@ class AgentBrowserTool(ToolBase):
             await self._refresh_tabs()
 
     async def _take_screenshot(self, path_override: str | None = None, annotate: bool = False) -> str | None:
+        raw = await self._take_screenshot_raw(path_override=path_override, annotate=annotate)
+        if raw is None:
+            return None
+        return base64.b64encode(raw).decode("ascii")
+
+    async def _take_screenshot_raw(self, path_override: str | None = None, annotate: bool = False) -> bytes | None:
         if screenshots_disabled():
             return None
         try:
@@ -2658,12 +2730,10 @@ class AgentBrowserTool(ToolBase):
             args.append("--json")
             result = await self._exec(*args)
             data = self._parse_data(result.stdout)
-            # agent-browser may return path in data.path
             returned_path = data.get("path", str(path))
             if Path(returned_path).exists():
                 with open(returned_path, "rb") as f:
                     png_bytes = f.read()
-                # Optionally scale down to save LLM tokens
                 if self._screenshot_scale < 1.0:
                     try:
                         from PIL import Image
@@ -2678,7 +2748,7 @@ class AgentBrowserTool(ToolBase):
                         png_bytes = buf.getvalue()
                     except Exception:
                         pass
-                return base64.b64encode(png_bytes).decode("ascii")
+                return png_bytes
         except Exception:
             pass
         return None

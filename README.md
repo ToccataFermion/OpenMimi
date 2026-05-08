@@ -63,6 +63,7 @@ python scripts/xft_advanced_login.py
 | `extract` | Structured extraction: text, headings, links, forms, tables, metadata, images |
 | `page_source` | Raw HTML of the current page |
 | `get_box` | Element bounding box for OS-level mouse coordination |
+| `visual_locate` | Find element by OpenCV template matching on screenshot |
 | `scroll_into_view` | Bring element into viewport |
 | `wait_for` | Poll until element/text appears |
 | `wait_for_navigation` | Wait for URL change after SPA navigation |
