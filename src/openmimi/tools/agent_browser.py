@@ -2353,6 +2353,30 @@ class AgentBrowserTool(ToolBase):
         if not self._started:
             return
         try:
+            # Try CDP pre-injection so stealth runs before any page scripts
+            cdp_inject = f"""
+            (async () => {{
+                try {{
+                    await window.__openmimi_cdp_send('Page.addScriptToEvaluateOnNewDocument', {{
+                        source: {json.dumps(_STEALTH_JS)}
+                    }});
+                    return {{ok: true, method: 'cdp_preinject'}};
+                }} catch (e) {{
+                    return {{error: e.message}};
+                }}
+            }})()
+            """
+            result = await self._exec("eval", cdp_inject, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("ok"):
+                # CDP pre-injection succeeded; also run immediately for current page
+                await self._exec("eval", _STEALTH_JS, "--json")
+                return
+        except Exception:
+            pass
+        # Fallback: standard eval injection for current page only
+        try:
             await self._exec("eval", _STEALTH_JS, "--json")
         except Exception:
             pass
