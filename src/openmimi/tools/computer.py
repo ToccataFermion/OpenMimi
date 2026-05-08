@@ -53,6 +53,8 @@ _TOOL_DESCRIPTION = (
     "- get_screen_info: return primary monitor resolution and DPI.\n"
     "- ocr [x y width height] [language=chi_sim+eng]: extract text from a screen region using Tesseract OCR. "
     "  If no region is specified, OCR the full screenshot. Useful for reading native app UI or notifications.\n"
+    "- window_manage title window_action [x y width height]: manage windows by title substring. "
+    "  Actions: move, resize, minimize, maximize, restore, close.\n"
     "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )
 
@@ -276,6 +278,7 @@ class ComputerTool(ToolBase):
                             "file",
                             "get_screen_info",
                             "ocr",
+                            "window_manage",
                             "shell",
                         ],
                         "description": "The desktop action to perform.",
@@ -385,6 +388,11 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Tesseract language code(s) for action='ocr' (default: chi_sim+eng).",
                     },
+                    "window_action": {
+                        "type": "string",
+                        "enum": ["move", "resize", "minimize", "maximize", "restore", "close"],
+                        "description": "Window operation for action='window_manage'.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -420,6 +428,7 @@ class ComputerTool(ToolBase):
             "file": self._do_file,
             "get_screen_info": self._do_get_screen_info,
             "ocr": self._do_ocr,
+            "window_manage": self._do_window_manage,
             "shell": self._do_shell,
         }
         handler = handlers.get(action)
@@ -1037,6 +1046,61 @@ class ComputerTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"OCR failed: {exc}", is_error=True)
+
+    async def _do_window_manage(self, inp: dict[str, Any]) -> ToolResult:
+        """Manage windows: move, resize, minimize, maximize, restore, close."""
+        title = str(inp.get("title", "")).strip().lower()
+        window_action = str(inp.get("window_action", "")).strip().lower()
+        if not title:
+            return ToolResult(output="window_manage requires 'title'", is_error=True)
+        if not window_action:
+            return ToolResult(output="window_manage requires 'window_action'", is_error=True)
+        try:
+            import win32gui
+            import win32con
+        except ImportError:
+            return ToolResult(output="win32gui not available", is_error=True)
+
+        def _enum(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                wt = win32gui.GetWindowText(hwnd).lower()
+                if title in wt:
+                    extra.append((hwnd, win32gui.GetWindowText(hwnd)))
+            return True
+
+        matches = []
+        win32gui.EnumWindows(_enum, matches)
+        if not matches:
+            return ToolResult(output=f"No visible window matching '{title}'", is_error=True)
+
+        hwnd, full_title = matches[-1]
+        try:
+            if window_action == "move":
+                x = inp.get("x", 0)
+                y = inp.get("y", 0)
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, x, y, 0, 0, win32con.SWP_NOSIZE)
+                return ToolResult(output=f"Moved window '{full_title}' to ({x}, {y})")
+            elif window_action == "resize":
+                width = inp.get("width", 800)
+                height = inp.get("height", 600)
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 0, 0, width, height, win32con.SWP_NOMOVE)
+                return ToolResult(output=f"Resized window '{full_title}' to {width}x{height}")
+            elif window_action == "minimize":
+                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+                return ToolResult(output=f"Minimized window '{full_title}'")
+            elif window_action == "maximize":
+                win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+                return ToolResult(output=f"Maximized window '{full_title}'")
+            elif window_action == "restore":
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                return ToolResult(output=f"Restored window '{full_title}'")
+            elif window_action == "close":
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                return ToolResult(output=f"Closed window '{full_title}'")
+            else:
+                return ToolResult(output=f"Unknown window_action: {window_action}", is_error=True)
+        except Exception as exc:
+            return ToolResult(output=f"window_manage failed for '{full_title}': {exc}", is_error=True)
 
     async def _do_shell(self, inp: dict[str, Any]) -> ToolResult:
         """Execute a shell command and return stdout/stderr."""
