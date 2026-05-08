@@ -100,6 +100,9 @@ python scripts/xft_advanced_login.py
 |---------|-------------|
 | `stealth` mode | 14-vector JS anti-detection injection |
 | `emulate_device` | Mobile emulation: iPhone 14, Pixel 7, iPad Mini |
+| `set_timezone` | Override browser timezone via CDP |
+| `set_locale` | Override browser locale via CDP |
+| `set_geolocation` | Override GPS location via CDP |
 | `proxy` | Route traffic through proxy server |
 | `user_data_dir` | Persistent Chrome profile (IndexedDB, cache, extensions) |
 | `screenshot_scale` | Scale screenshots to reduce LLM token usage |

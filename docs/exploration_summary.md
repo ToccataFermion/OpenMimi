@@ -188,6 +188,9 @@ DL 解法流程：
 | `get_attribute` | 读取元素 DOM 属性（href, src, data-* 等），支持 ref 或 target_text 定位 |
 | `set_attribute` | 写入元素 DOM 属性，支持 ref 或 target_text 定位 |
 | `get_property` | 读取元素 JS 属性（value, checked, innerText, innerHTML 等） |
+| `set_timezone` | CDP `Emulation.setTimezoneOverride` 覆盖浏览器时区 |
+| `set_locale` | CDP `Emulation.setLocaleOverride` 覆盖浏览器语言环境 |
+| `set_geolocation` | CDP `Emulation.setGeolocationOverride` 覆盖 GPS 定位（省略坐标则清除） |
 
 ### 5.3 Bug 修复
 

@@ -91,6 +91,9 @@ _TOOL_DESCRIPTION = (
     "Viewport: action='set_viewport' with 'width' and 'height' resizes the browser window. "
     "Device emulation: action='emulate_device' with 'device_name' (iPhone 14, Pixel 7, iPad Mini, reset) "
     "sets viewport, DPR, and user agent for mobile testing.\n"
+    "Timezone: action='set_timezone' with 'timezone' (e.g. 'Asia/Shanghai') overrides browser timezone via CDP. Pass empty string to reset.\n"
+    "Locale: action='set_locale' with 'locale' (e.g. 'zh-CN') overrides browser locale via CDP. Pass empty string to reset.\n"
+    "Geolocation: action='set_geolocation' with 'latitude', 'longitude', and optional 'accuracy' overrides GPS location via CDP. Omit coords to clear.\n"
     "CDP raw access: action='cdp' with 'cdp_method' and optional 'cdp_params' sends arbitrary "
     "Chrome DevTools Protocol commands via window.__openmimi_cdp_send. Use as an escape hatch "
     "for CDP features not covered by other actions.\n"
@@ -482,6 +485,9 @@ class AgentBrowserTool(ToolBase):
                             "wait_for_navigation",
                             "wait_for_network_idle",
                             "emulate_device",
+                            "set_timezone",
+                            "set_locale",
+                            "set_geolocation",
                             "cdp",
                         ],
                         "description": "The browser action to perform.",
@@ -712,6 +718,26 @@ class AgentBrowserTool(ToolBase):
                         "type": "integer",
                         "description": "For action='wait_for_network_idle': ms of no network activity before returning (default 2000).",
                     },
+                    "timezone": {
+                        "type": "string",
+                        "description": "Timezone ID for action='set_timezone' (e.g. 'Asia/Shanghai', 'America/New_York'). Pass empty string to reset.",
+                    },
+                    "locale": {
+                        "type": "string",
+                        "description": "Locale for action='set_locale' (e.g. 'zh-CN', 'en-US'). Pass empty string to reset.",
+                    },
+                    "latitude": {
+                        "type": "number",
+                        "description": "Latitude for action='set_geolocation' (-90 to 90).",
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "description": "Longitude for action='set_geolocation' (-180 to 180).",
+                    },
+                    "accuracy": {
+                        "type": "number",
+                        "description": "Accuracy in meters for action='set_geolocation' (default 100).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -819,6 +845,9 @@ class AgentBrowserTool(ToolBase):
             "wait_for_navigation": self._do_wait_for_navigation,
             "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
+            "set_timezone": self._do_set_timezone,
+            "set_locale": self._do_set_locale,
+            "set_geolocation": self._do_set_geolocation,
             "cdp": self._do_cdp,
         }
         handler = handlers.get(action)
@@ -1746,6 +1775,98 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"emulate_device failed: {exc}", is_error=True)
+
+    async def _do_set_timezone(self, inp: dict[str, Any]) -> ToolResult:
+        """Set browser timezone via CDP Emulation.setTimezoneOverride."""
+        tz = str(inp.get("timezone", ""))
+        cdp_js = (
+            "(async () => {\n"
+            "  try {\n"
+            "    await window.__openmimi_cdp_send('Emulation.setTimezoneOverride', {timezoneId: " + json.dumps(tz) + "});\n"
+            "    return {ok: true, timezone: " + json.dumps(tz) + "};\n"
+            "  } catch (e) {\n"
+            "    return {error: e.message};\n"
+            "  }\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"set_timezone failed: {result_value['error']}", is_error=True)
+            return ToolResult(output=f"Timezone set to {tz!r}" if tz else "Timezone reset to default")
+        except Exception as exc:
+            return ToolResult(output=f"set_timezone error: {exc}", is_error=True)
+
+    async def _do_set_locale(self, inp: dict[str, Any]) -> ToolResult:
+        """Set browser locale via CDP Emulation.setLocaleOverride."""
+        loc = str(inp.get("locale", ""))
+        cdp_js = (
+            "(async () => {\n"
+            "  try {\n"
+            "    await window.__openmimi_cdp_send('Emulation.setLocaleOverride', {locale: " + json.dumps(loc) + "});\n"
+            "    return {ok: true, locale: " + json.dumps(loc) + "};\n"
+            "  } catch (e) {\n"
+            "    return {error: e.message};\n"
+            "  }\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"set_locale failed: {result_value['error']}", is_error=True)
+            return ToolResult(output=f"Locale set to {loc!r}" if loc else "Locale reset to default")
+        except Exception as exc:
+            return ToolResult(output=f"set_locale error: {exc}", is_error=True)
+
+    async def _do_set_geolocation(self, inp: dict[str, Any]) -> ToolResult:
+        """Set browser geolocation via CDP Emulation.setGeolocationOverride."""
+        lat = inp.get("latitude")
+        lon = inp.get("longitude")
+        acc = inp.get("accuracy", 100)
+        if lat is None or lon is None:
+            # Clear override
+            cdp_js = (
+                "(async () => {\n"
+                "  try {\n"
+                "    await window.__openmimi_cdp_send('Emulation.clearGeolocationOverride');\n"
+                "    return {ok: true, cleared: true};\n"
+                "  } catch (e) {\n"
+                "    return {error: e.message};\n"
+                "  }\n"
+                "})()"
+            )
+            try:
+                result = await self._exec("eval", cdp_js, "--json")
+                return ToolResult(output="Geolocation override cleared")
+            except Exception as exc:
+                return ToolResult(output=f"clear_geolocation error: {exc}", is_error=True)
+        cdp_js = (
+            "(async () => {\n"
+            "  try {\n"
+            "    await window.__openmimi_cdp_send('Emulation.setGeolocationOverride', {\n"
+            "      latitude: " + str(float(lat)) + ",\n"
+            "      longitude: " + str(float(lon)) + ",\n"
+            "      accuracy: " + str(float(acc)) + "\n"
+            "    });\n"
+            "    return {ok: true, lat: " + str(float(lat)) + ", lon: " + str(float(lon)) + "};\n"
+            "  } catch (e) {\n"
+            "    return {error: e.message};\n"
+            "  }\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"set_geolocation failed: {result_value['error']}", is_error=True)
+            return ToolResult(output=f"Geolocation set to ({lat}, {lon}) ±{acc}m")
+        except Exception as exc:
+            return ToolResult(output=f"set_geolocation error: {exc}", is_error=True)
 
     async def _do_cdp(self, inp: dict[str, Any]) -> ToolResult:
         """Send an arbitrary CDP command via window.__openmimi_cdp_send."""
