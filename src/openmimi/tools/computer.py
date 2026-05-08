@@ -39,6 +39,7 @@ _TOOL_DESCRIPTION = (
     "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
     "- mouse_double_click [x y] [button=left|right]: double-click at coordinates or current position\n"
     "- cursor_position: return current mouse cursor screen coordinates\n"
+    "- focus_window title: bring the first window whose title contains 'title' to the foreground\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle"
@@ -203,6 +204,7 @@ class ComputerTool(ToolBase):
                             "mouse_scroll",
                             "mouse_double_click",
                             "cursor_position",
+                            "focus_window",
                             "key_press",
                             "type",
                             "wait",
@@ -233,6 +235,10 @@ class ComputerTool(ToolBase):
                     "text": {
                         "type": "string",
                         "description": "Text to type.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Window title substring for focus_window action.",
                     },
                     "end_x": {
                         "type": "integer",
@@ -273,6 +279,7 @@ class ComputerTool(ToolBase):
             "mouse_scroll": self._do_mouse_scroll,
             "mouse_double_click": self._do_mouse_double_click,
             "cursor_position": self._do_cursor_position,
+            "focus_window": self._do_focus_window,
             "key_press": self._do_key_press,
             "type": self._do_type,
             "wait": self._do_wait,
@@ -428,6 +435,35 @@ class ComputerTool(ToolBase):
         point = ctypes.wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
         return ToolResult(output=f"Cursor at ({point.x}, {point.y})")
+
+    async def _do_focus_window(self, inp: dict[str, Any]) -> ToolResult:
+        title = str(inp.get("title", "")).strip().lower()
+        if not title:
+            return ToolResult(output="focus_window requires 'title'", is_error=True)
+        try:
+            import win32gui
+            import win32con
+        except ImportError:
+            return ToolResult(output="win32gui not available", is_error=True)
+
+        def _enum(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                wt = win32gui.GetWindowText(hwnd).lower()
+                if title in wt:
+                    extra.append((hwnd, win32gui.GetWindowText(hwnd)))
+            return True
+
+        matches = []
+        win32gui.EnumWindows(_enum, matches)
+        if not matches:
+            return ToolResult(output=f"No visible window matching '{title}'", is_error=True)
+        hwnd, full_title = matches[-1]
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as exc:
+            return ToolResult(output=f"Failed to focus '{full_title}': {exc}", is_error=True)
+        return ToolResult(output=f"Focused window: {full_title}")
 
     async def _do_wait(self, inp: dict[str, Any]) -> ToolResult:
         ms = max(0, int(inp.get("milliseconds", 1000)))
