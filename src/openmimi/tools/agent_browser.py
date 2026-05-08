@@ -58,6 +58,8 @@ _TOOL_DESCRIPTION = (
     "Console: action='console' returns recent browser console logs (errors, warnings, info). "
     "Clear data: action='clear_cache' wipes cookies, localStorage, and sessionStorage. "
     "Viewport: action='set_viewport' with 'width' and 'height' resizes the browser window. "
+    "Session persistence: action='save_session' with 'file_path' persists cookies/storage; "
+    "action='load_session' with 'file_path' restores them to avoid repeated logins. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -244,6 +246,8 @@ class AgentBrowserTool(ToolBase):
                             "console",
                             "clear_cache",
                             "set_viewport",
+                            "save_session",
+                            "load_session",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -475,6 +479,8 @@ class AgentBrowserTool(ToolBase):
             "console": self._do_console,
             "clear_cache": self._do_clear_cache,
             "set_viewport": self._do_set_viewport,
+            "save_session": self._do_save_session,
+            "load_session": self._do_load_session,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1399,6 +1405,79 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"Viewport set. {output}")
         except Exception as exc:
             return ToolResult(output=f"set_viewport failed: {exc}", is_error=True)
+
+    async def _do_save_session(self, inp: dict[str, Any]) -> ToolResult:
+        """Save cookies, localStorage, and sessionStorage to a JSON file."""
+        file_path = inp.get("file_path")
+        if not file_path:
+            return ToolResult(output="save_session requires 'file_path'", is_error=True)
+        js = """
+        (async () => {
+            const local = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                local[k] = localStorage.getItem(k);
+            }
+            const session = {};
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i);
+                session[k] = sessionStorage.getItem(k);
+            }
+            return {
+                url: window.location.href,
+                cookies: document.cookie,
+                localStorage: local,
+                sessionStorage: session,
+            };
+        })()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(result_value, f, ensure_ascii=False, indent=2)
+            return ToolResult(output=f"Session saved to {file_path}")
+        except Exception as exc:
+            return ToolResult(output=f"save_session failed: {exc}", is_error=True)
+
+    async def _do_load_session(self, inp: dict[str, Any]) -> ToolResult:
+        """Restore cookies, localStorage, and sessionStorage from a JSON file."""
+        file_path = inp.get("file_path")
+        if not file_path:
+            return ToolResult(output="load_session requires 'file_path'", is_error=True)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                session_data = json.load(f)
+        except Exception as exc:
+            return ToolResult(output=f"Failed to read session file: {exc}", is_error=True)
+
+        cookies = session_data.get("cookies", "")
+        local = session_data.get("localStorage", {})
+        session = session_data.get("sessionStorage", {})
+
+        js_parts = ["(() => {"]
+        if cookies:
+            for c in cookies.split(";"):
+                c = c.strip()
+                if c:
+                    js_parts.append(f"    document.cookie = {json.dumps(c)};")
+        for k, v in local.items():
+            js_parts.append(f"    localStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+        for k, v in session.items():
+            js_parts.append(f"    sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+        js_parts.append("    return {ok: true};")
+        js_parts.append("})()")
+        js = "\n".join(js_parts)
+
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            output = json.dumps(result_value, ensure_ascii=False, indent=2)[:2000]
+            return ToolResult(output=f"Session loaded from {file_path}. {output}")
+        except Exception as exc:
+            return ToolResult(output=f"load_session failed: {exc}", is_error=True)
 
     async def _do_close(self) -> ToolResult:
         if self._started:
