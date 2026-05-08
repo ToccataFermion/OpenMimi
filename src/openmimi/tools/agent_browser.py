@@ -792,16 +792,28 @@ class AgentBrowserTool(ToolBase):
     async def _detect_captcha(self, snapshot_text: str) -> dict[str, str] | None:
         """Check for active CAPTCHA/verification challenge indicators.
 
-        Uses DOM element detection first (more reliable) and falls back to
-        keyword matching only when visible CAPTCHA elements are present.
-        This avoids false positives from instructional text on login pages.
+        Requires BOTH a visible CAPTCHA element AND matching keywords in the
+        snapshot text.  This two-signal approach eliminates false positives
+        from login pages that contain CAPTCHA instructional text or unrelated
+        elements with captcha-like class names.
 
         Returns a dict with 'type' and 'message' if detected, else None.
         """
         if not snapshot_text:
             return None
 
-        # Primary: check for visible CAPTCHA elements in the DOM
+        text_lower = snapshot_text.lower()
+
+        # 1) Keyword signal – must be present for any detection
+        keyword_match = None
+        for keyword in _CAPTCHA_KEYWORDS:
+            if keyword.lower() in text_lower:
+                keyword_match = keyword
+                break
+        if not keyword_match:
+            return None
+
+        # 2) Element signal – a known CAPTCHA container must be visible
         js = """
         (() => {
             const selectors = [
@@ -814,8 +826,6 @@ class AgentBrowserTool(ToolBase):
                 '.g-recaptcha', '.recaptcha',
                 '.yidun', '.yidun_panel',
                 '.slideCode', '.verify-code',
-                '[class*="slider-verify"]', '[class*="slide-verify"]',
-                '[id*="captcha"]', '[class*="captcha"]',
             ];
             for (const sel of selectors) {
                 const el = document.querySelector(sel);
@@ -824,42 +834,36 @@ class AgentBrowserTool(ToolBase):
                     const rect = el.getBoundingClientRect();
                     if (style.display !== 'none' && style.visibility !== 'hidden' &&
                         rect.width > 10 && rect.height > 10) {
-                        return {found: true, selector: sel, text: el.textContent.slice(0, 200)};
+                        return {found: true, selector: sel};
                     }
                 }
             }
             return {found: false};
         })()
         """
+        element_found = False
         try:
             result = await self._exec("eval", js, "--json")
             raw = self._parse_json(result.stdout)
             if isinstance(raw, dict) and raw.get("success") is True:
                 data = raw.get("data", {})
                 result_value = data.get("result") if isinstance(data, dict) else {}
-                if isinstance(result_value, dict) and result_value.get("found"):
-                    sel = result_value.get("selector", "")
-                    # Classify by selector / text
-                    text_lower = snapshot_text.lower()
-                    if ("滑块" in snapshot_text or "拖动" in snapshot_text or
-                        "slide" in text_lower or "slider" in sel.lower()):
-                        return {"type": "slider", "message": "Slider CAPTCHA detected (visible element). Analyze the screenshot to solve it."}
-                    if ("点击" in snapshot_text or "click" in text_lower):
-                        return {"type": "click", "message": "Click CAPTCHA detected (visible element). Analyze the screenshot to solve it."}
-                    return {"type": "unknown", "message": "CAPTCHA/verification challenge detected (visible element). Analyze the screenshot to solve it."}
+                element_found = isinstance(result_value, dict) and result_value.get("found")
         except Exception:
             pass
 
-        # Fallback: keyword matching only for pages we can't eval on
-        text_lower = snapshot_text.lower()
-        for keyword in _CAPTCHA_KEYWORDS:
-            if keyword.lower() in text_lower:
-                if "滑块" in snapshot_text or "拖动" in snapshot_text or "slide" in text_lower:
-                    return {"type": "slider", "message": f"Slider CAPTCHA detected (keyword: '{keyword}'). Analyze the screenshot to solve it."}
-                if "点击" in snapshot_text or "click" in text_lower:
-                    return {"type": "click", "message": f"Click CAPTCHA detected (keyword: '{keyword}'). Analyze the screenshot to solve it."}
-                return {"type": "unknown", "message": f"CAPTCHA/verification challenge detected (keyword: '{keyword}'). Analyze the screenshot to solve it."}
-        return None
+        if not element_found:
+            # No visible CAPTCHA element – do not report even if keywords are present.
+            # This prevents false positives from instructional UI text.
+            return None
+
+        # Both signals present – classify and report
+        if ("滑块" in snapshot_text or "拖动" in snapshot_text or
+            "slide" in text_lower):
+            return {"type": "slider", "message": "Slider CAPTCHA detected. Analyze the screenshot to solve it."}
+        if ("点击" in snapshot_text or "click" in text_lower):
+            return {"type": "click", "message": "Click CAPTCHA detected. Analyze the screenshot to solve it."}
+        return {"type": "unknown", "message": "CAPTCHA/verification challenge detected. Analyze the screenshot to solve it."}
 
     def _browser_env(self) -> dict[str, str] | None:
         """Return environment dict with AGENT_BROWSER_ARGS set if needed.
