@@ -622,7 +622,16 @@ class AgentBrowserTool(ToolBase):
         try:
             return await self._dispatch(action, tool_input)
         except Exception as e:
-            return ToolResult(output=f"Error: {e}", is_error=True)
+            # Capture screenshot on error to aid debugging
+            image: str | None = None
+            try:
+                image = await self._take_screenshot()
+            except Exception:
+                pass
+            err_text = f"Error: {e}"
+            if image:
+                err_text += "\n[A screenshot of the error state is attached]"
+            return ToolResult(output=err_text, is_error=True, base64_image=image)
 
     async def close(self) -> None:
         if self._started:
