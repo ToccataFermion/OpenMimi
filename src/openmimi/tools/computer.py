@@ -44,7 +44,8 @@ _TOOL_DESCRIPTION = (
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
     "- key_combo keys: press multiple keys simultaneously (e.g. ['Control','c']).\n"
     "- type text: type a string\n"
-    "- wait milliseconds=1000: pause briefly for UI to settle"
+    "- wait milliseconds=1000: pause briefly for UI to settle\n"
+    "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)"
 )
 
 # Windows input constants
@@ -260,6 +261,7 @@ class ComputerTool(ToolBase):
                             "key_combo",
                             "type",
                             "wait",
+                            "locate",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -313,6 +315,14 @@ class ComputerTool(ToolBase):
                         "type": "integer",
                         "description": "Wait time in milliseconds (default 1000).",
                     },
+                    "template_path": {
+                        "type": "string",
+                        "description": "Path to a template image for locate action (PNG/JPG).",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Minimum confidence threshold for locate (0.0-1.0, default 0.8).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -341,6 +351,7 @@ class ComputerTool(ToolBase):
             "key_combo": self._do_key_combo,
             "type": self._do_type,
             "wait": self._do_wait,
+            "locate": self._do_locate,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -566,6 +577,48 @@ class ComputerTool(ToolBase):
         ms = max(0, int(inp.get("milliseconds", 1000)))
         time.sleep(ms / 1000.0)
         return ToolResult(output=f"Waited {ms}ms")
+
+    async def _do_locate(self, inp: dict[str, Any]) -> ToolResult:
+        """Find a template image on the screen using OpenCV template matching."""
+        template_path = str(inp.get("template_path", ""))
+        confidence = float(inp.get("confidence", 0.8))
+        if not template_path:
+            return ToolResult(output="locate requires 'template_path'", is_error=True)
+        try:
+            import cv2
+            import numpy as np
+        except ImportError as exc:
+            return ToolResult(output=f"locate requires opencv-python: {exc}", is_error=True)
+
+        try:
+            # Capture current screen
+            sct = self._ensure_mss()
+            raw = sct.grab(sct.monitors[1])
+            import mss.tools
+            png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+            screen = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
+            template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+            if screen is None:
+                return ToolResult(output="Failed to capture screen", is_error=True)
+            if template is None:
+                return ToolResult(output=f"Failed to load template: {template_path}", is_error=True)
+
+            result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            if max_val >= confidence:
+                h, w = template.shape[:2]
+                cx = max_loc[0] + w // 2
+                cy = max_loc[1] + h // 2
+                return ToolResult(
+                    output=f"Found at ({cx}, {cy}) with confidence {max_val:.3f}",
+                    details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h},
+                )
+            return ToolResult(
+                output=f"Template not found (best confidence: {max_val:.3f}, threshold: {confidence})",
+                is_error=True,
+            )
+        except Exception as exc:
+            return ToolResult(output=f"Locate error: {exc}", is_error=True)
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)

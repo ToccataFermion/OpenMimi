@@ -97,13 +97,27 @@ async def fill_credentials(browser: AgentBrowserTool) -> bool:
 
 
 async def submit_login(browser: AgentBrowserTool) -> bool:
-    """Click submit button with force fallback."""
+    """Click submit button via JS eval (more reliable than text matching)."""
     log("Clicking submit...")
     result = await browser({
-        "action": "click",
-        "target_text": "登录",
-        "force": True,
+        "action": "eval",
+        "js": """
+            (() => {
+                const btn = document.querySelector('.PasswordLogin_loginBtn__yuCsm');
+                if (btn) {
+                    btn.click();
+                    return {clicked: true, class: btn.className, text: btn.innerText};
+                }
+                const alt = document.querySelector('button[type="submit"]');
+                if (alt) {
+                    alt.click();
+                    return {clicked: true, class: alt.className, alt: true, text: alt.innerText};
+                }
+                return {clicked: false, html: document.body.innerHTML.substring(0, 200)};
+            })()
+        """,
     })
+    log(f"Submit click: {result.output}")
     await asyncio.sleep(4.0)
 
     result = await browser({
@@ -406,11 +420,6 @@ async def main() -> None:
         if not await click_login_button(browser):
             log("Failed to open login form")
             return
-
-        log("=== Wait for form ===")
-        result = await browser({"action": "wait_for", "target_text": "密码登录", "timeout_ms": 5000})
-        if result.is_error:
-            log("Password login tab not found, trying anyway...")
 
         log("=== Fill Form ===")
         if not await fill_credentials(browser):
