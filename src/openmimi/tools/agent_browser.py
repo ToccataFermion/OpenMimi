@@ -44,6 +44,8 @@ _TOOL_DESCRIPTION = (
     "Low-level mouse control: action='mouse' with 'mouse_action' (move/down/up/wheel). "
     "Use mouse sequences (move -> down -> move -> up) for interactions that standard click "
     "cannot handle, such as dragging sliders, drawing, or any press-and-hold gesture. "
+    "Window focus: action='focus' brings the browser window to the foreground (useful "
+    "before OS-level mouse actions like computer.mouse_drag on CAPTCHAs). "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -145,6 +147,7 @@ class AgentBrowserTool(ToolBase):
                             "close",
                             "drag",
                             "mouse",
+                            "focus",
                             "clipboard",
                         ],
                         "description": "The browser action to perform.",
@@ -312,6 +315,7 @@ class AgentBrowserTool(ToolBase):
             "batch": self._do_batch,
             "drag": self._do_drag,
             "mouse": self._do_mouse,
+            "focus": self._do_focus,
             "clipboard": self._do_clipboard,
         }
         handler = handlers.get(action)
@@ -778,6 +782,83 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"Unknown mouse_action: {mouse_action}")
         image = await self._take_screenshot()
         return ToolResult(output=f"Mouse {mouse_action}", base64_image=image)
+
+    async def _do_focus(self, _inp: dict[str, Any]) -> ToolResult:
+        """Bring the browser window to the foreground using win32gui."""
+        try:
+            import win32gui
+            import win32con
+        except ImportError:
+            return ToolResult(output="win32gui not available", is_error=True)
+
+        # Get current page title/URL to identify the right window
+        try:
+            result = await self._exec(
+                "eval",
+                "(() => ({title: document.title, href: window.location.href}))()",
+                "--json",
+            )
+            raw = self._parse_json(result.stdout)
+            page_info: dict[str, str] = {}
+            if isinstance(raw, dict) and raw.get("success") is True:
+                data = raw.get("data", {})
+                res = data.get("result") if isinstance(data, dict) else {}
+                if isinstance(res, dict):
+                    page_info = res
+        except Exception:
+            page_info = {}
+
+        title_hint = page_info.get("title", "").strip().lower()
+        url_hint = page_info.get("href", "").strip().lower()
+        domain = ""
+        if url_hint:
+            from urllib.parse import urlparse
+            try:
+                domain = urlparse(url_hint).netloc.lower()
+            except Exception:
+                pass
+
+        def _enum(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                wt = win32gui.GetWindowText(hwnd).lower()
+                extra.append((hwnd, wt))
+            return True
+
+        candidates = []
+        win32gui.EnumWindows(_enum, candidates)
+
+        # Score each candidate: higher = better match
+        best: tuple[int, str, int] | None = None
+        for hwnd, wt in candidates:
+            score = 0
+            if title_hint and title_hint in wt:
+                score += 3
+            if domain and domain in wt:
+                score += 2
+            if url_hint and url_hint in wt:
+                score += 2
+            # Generic Chromium/Electron indicators
+            if "chromium" in wt or "chrome" in wt:
+                score += 1
+            if score > 0 and (best is None or score > best[2]):
+                best = (hwnd, wt, score)
+
+        if best is None:
+            return ToolResult(
+                output="Could not find a visible browser window to focus",
+                is_error=True,
+            )
+
+        hwnd, wt, _score = best
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as exc:
+            return ToolResult(
+                output=f"Failed to focus browser window '{wt}': {exc}",
+                is_error=True,
+            )
+        return ToolResult(output=f"Browser window focused: {wt}")
 
     async def _do_close(self) -> ToolResult:
         if self._started:
