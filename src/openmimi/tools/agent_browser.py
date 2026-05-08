@@ -141,6 +141,7 @@ class AgentBrowserTool(ToolBase):
                             "close",
                             "drag",
                             "mouse",
+                            "clipboard",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -224,6 +225,19 @@ class AgentBrowserTool(ToolBase):
                         "enum": ["left", "right", "middle"],
                         "description": "Mouse button for down/up (default left).",
                     },
+                    "clipboard_action": {
+                        "type": "string",
+                        "enum": ["read", "write", "copy", "paste"],
+                        "description": "Clipboard subcommand for action='clipboard'.",
+                    },
+                    "clipboard_text": {
+                        "type": "string",
+                        "description": "Text to write to clipboard (for clipboard_action='write').",
+                    },
+                    "annotate": {
+                        "type": "boolean",
+                        "description": "Add numbered labels to screenshot for vision model reference (action='screenshot' only).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -279,6 +293,7 @@ class AgentBrowserTool(ToolBase):
             "batch": self._do_batch,
             "drag": self._do_drag,
             "mouse": self._do_mouse,
+            "clipboard": self._do_clipboard,
         }
         handler = handlers.get(action)
         if not handler:
@@ -514,8 +529,30 @@ class AgentBrowserTool(ToolBase):
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         path = inp.get("path")
-        image = await self._take_screenshot(path_override=path)
-        return ToolResult(output="Screenshot taken", base64_image=image)
+        annotate = inp.get("annotate", False)
+        image = await self._take_screenshot(path_override=path, annotate=annotate)
+        label = "Annotated screenshot" if annotate else "Screenshot"
+        return ToolResult(output=f"{label} taken", base64_image=image)
+
+    async def _do_clipboard(self, inp: dict[str, Any]) -> ToolResult:
+        cb_action = inp.get("clipboard_action", "read")
+        if cb_action == "read":
+            result = await self._exec("clipboard", "read", "--json")
+            data = self._parse_data(result.stdout)
+            text = data.get("text", "")
+            return ToolResult(output=f"Clipboard: {text}")
+        elif cb_action == "write":
+            text = str(inp.get("clipboard_text", ""))
+            await self._exec("clipboard", "write", text, "--json")
+            return ToolResult(output=f"Wrote {len(text)} chars to clipboard")
+        elif cb_action == "copy":
+            await self._exec("clipboard", "copy", "--json")
+            return ToolResult(output="Copied current selection to clipboard")
+        elif cb_action == "paste":
+            await self._exec("clipboard", "paste", "--json")
+            return ToolResult(output="Pasted clipboard content")
+        else:
+            return ToolResult(output=f"Unknown clipboard action: {cb_action}", is_error=True)
 
     async def _do_extract(self, inp: dict[str, Any]) -> ToolResult:
         instruction = inp.get("instruction", "get text")
@@ -808,10 +845,14 @@ class AgentBrowserTool(ToolBase):
             await asyncio.sleep(1.5)
             await self._refresh_tabs()
 
-    async def _take_screenshot(self, path_override: str | None = None) -> str | None:
+    async def _take_screenshot(self, path_override: str | None = None, annotate: bool = False) -> str | None:
         try:
             path = Path(path_override) if path_override else _SCREENSHOT_DIR / f"ab_{int(time.time() * 1000)}.png"
-            result = await self._exec("screenshot", str(path), "--json")
+            args = ["screenshot", str(path)]
+            if annotate:
+                args.append("--annotate")
+            args.append("--json")
+            result = await self._exec(*args)
             data = self._parse_data(result.stdout)
             # agent-browser may return path in data.path
             returned_path = data.get("path", str(path))
