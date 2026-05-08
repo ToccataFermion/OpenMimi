@@ -194,6 +194,11 @@ DL 解法流程：
 - `click_image`：修复调用不存在的方法 `_mouse_click`，改为正确的 `mouse_move` + `SendInput`
 - `click_text`：修复调用不存在的 `_send_mouse_move` / `_send_mouse_click`，改为正确的异步流程
 
+### 5.4 调研：2026 年反检测浏览器工具全景
+
+- 完成 Camoufox 及替代方案调研，详细报告见 `docs/camoufox_research_2026.md`
+- **关键发现**：Rebrowser 的 `Runtime.enable` CDP 补丁是当前最具工程价值的反检测方案；Camoufox 处于重建期，尚未恢复生产级稳定性
+
 ## 6. 脚本更新
 
 - `scripts/xft_advanced_login.py` 已迁移至 `react_fill`，移除内联 `setReactValue` eval JS
@@ -209,7 +214,7 @@ DL 解法流程：
 ### 7.2 中优先级
 
 4. **行为级反检测增强** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
-5. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案（原始维护者 2025-03 后失联，社区 fork 活跃中）
+5. **Camoufox 集成评估** - 已完成初步调研（见 `docs/camoufox_research_2026.md`）。结论：Camoufox 2026 年处于 Clover Labs 接管后的重建期，仍为实验性；更值得关注的是 Rebrowser（修复 `Runtime.enable` CDP 检测）和 Patchright（Playwright 即插即用替代）
 6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入（click_image 已覆盖视觉场景）
 
 ### 7.3 长期
