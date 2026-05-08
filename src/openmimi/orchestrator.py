@@ -20,7 +20,7 @@ from .llm import AnthropicClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
-from .tools import AgentBrowserTool, ComputerTool, FileTool, ShellTool, ToolCollection
+from .tools import AgentBrowserTool, CodeTool, ComputerTool, FileTool, ShellTool, ToolCollection
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
@@ -107,6 +107,7 @@ class Orchestrator:
         tools.register(ComputerTool(screen_dir=str(cfg.storage.screen_dir)))
         tools.register(ShellTool())
         tools.register(FileTool())
+        tools.register(CodeTool())
 
         audit = JsonlAuditLogger(
             audit_dir=cfg.storage.audit_dir,

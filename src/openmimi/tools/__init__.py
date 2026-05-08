@@ -4,6 +4,7 @@ from __future__ import annotations
 from .base import ToolBase
 from .agent_browser import AgentBrowserTool
 from .browser import BrowserTool
+from .code import CodeTool
 from .computer import ComputerTool
 from .file_tool import FileTool
 from .shell import ShellTool
@@ -32,6 +33,7 @@ from .result import ToolResult
 
 __all__ = [
     "AgentBrowserTool",
+    "CodeTool",
     "ComputerTool",
     "FileTool",
     "ShellTool",
