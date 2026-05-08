@@ -2190,14 +2190,57 @@ class AgentBrowserTool(ToolBase):
         value = inp.get("storage_value", "")
 
         if storage_type == "cookies":
+            # Try CDP first for HTTP-only cookie support, fallback to JS document.cookie
             if storage_action == "get":
-                js = "(() => ({cookies: document.cookie}))()"
-            elif storage_action == "set":
+                cdp_js = """
+                (async () => {
+                    try {
+                        const result = await window.__openmimi_cdp_send('Network.getAllCookies');
+                        return {ok: true, method: 'cdp', cookies: result.cookies};
+                    } catch (e) {
+                        return {error: e.message, method: 'cdp_failed'};
+                    }
+                })()
+                """
+                fallback_js = "(() => ({cookies: document.cookie}))()"
+                return await self._try_cdp_then_fallback(cdp_js, fallback_js, "cookies", storage_action, key)
+
+            if storage_action == "set":
                 if not key:
                     return ToolResult(output="cookie set requires 'storage_key' (name=value)", is_error=True)
-                js = f"(() => {{ document.cookie = {json.dumps(key)}; return {{ok: true}}; }})()"
-            elif storage_action == "clear":
-                js = """
+                cdp_js = f"""
+                (async () => {{
+                    try {{
+                        const key = {json.dumps(key)};
+                        const idx = key.indexOf('=');
+                        const name = idx >= 0 ? key.substring(0, idx).trim() : key.trim();
+                        const val = idx >= 0 ? key.substring(idx + 1).trim() : '';
+                        await window.__openmimi_cdp_send('Network.setCookie', {{
+                            name: name,
+                            value: val,
+                            url: window.location.href,
+                        }});
+                        return {{ok: true, method: 'cdp'}};
+                    }} catch (e) {{
+                        return {{error: e.message, method: 'cdp_failed'}};
+                    }}
+                }})()
+                """
+                fallback_js = f"(() => {{ document.cookie = {json.dumps(key)}; return {{ok: true}}; }})()"
+                return await self._try_cdp_then_fallback(cdp_js, fallback_js, "cookies", storage_action, key)
+
+            if storage_action == "clear":
+                cdp_js = """
+                (async () => {
+                    try {
+                        await window.__openmimi_cdp_send('Network.clearBrowserCookies');
+                        return {ok: true, method: 'cdp'};
+                    } catch (e) {
+                        return {error: e.message, method: 'cdp_failed'};
+                    }
+                })()
+                """
+                fallback_js = """
                 (() => {
                     const cookies = document.cookie.split(';');
                     for (let c of cookies) {
@@ -2207,30 +2250,31 @@ class AgentBrowserTool(ToolBase):
                     return {ok: true};
                 })()
                 """
+                return await self._try_cdp_then_fallback(cdp_js, fallback_js, "cookies", storage_action, key)
+
+            return ToolResult(output=f"Unsupported cookie action: {storage_action}", is_error=True)
+
+        # localStorage or sessionStorage
+        store = "localStorage" if storage_type == "localStorage" else "sessionStorage"
+        if storage_action == "get":
+            if key:
+                js = f"(() => ({{value: {store}.getItem({json.dumps(key)})}}))()"
             else:
-                return ToolResult(output=f"Unsupported cookie action: {storage_action}", is_error=True)
+                js = f"(() => {{ const items = {{}}; for (let i = 0; i < {store}.length; i++) {{ const k = {store}.key(i); items[k] = {store}.getItem(k); }} return items; }})()"
+        elif storage_action == "set":
+            if not key:
+                return ToolResult(output="storage set requires 'storage_key'", is_error=True)
+            js = f"(() => {{ {store}.setItem({json.dumps(key)}, {json.dumps(value)}); return {{ok: true}}; }})()"
+        elif storage_action == "delete":
+            if not key:
+                return ToolResult(output="storage delete requires 'storage_key'", is_error=True)
+            js = f"(() => {{ {store}.removeItem({json.dumps(key)}); return {{ok: true}}; }})()"
+        elif storage_action == "clear":
+            js = f"(() => {{ {store}.clear(); return {{ok: true}}; }})()"
+        elif storage_action == "list":
+            js = f"(() => {{ const keys = []; for (let i = 0; i < {store}.length; i++) {{ keys.push({store}.key(i)); }} return {{keys}}; }})()"
         else:
-            # localStorage or sessionStorage
-            store = "localStorage" if storage_type == "localStorage" else "sessionStorage"
-            if storage_action == "get":
-                if key:
-                    js = f"(() => ({{value: {store}.getItem({json.dumps(key)})}}))()"
-                else:
-                    js = f"(() => {{ const items = {{}}; for (let i = 0; i < {store}.length; i++) {{ const k = {store}.key(i); items[k] = {store}.getItem(k); }} return items; }})()"
-            elif storage_action == "set":
-                if not key:
-                    return ToolResult(output="storage set requires 'storage_key'", is_error=True)
-                js = f"(() => {{ {store}.setItem({json.dumps(key)}, {json.dumps(value)}); return {{ok: true}}; }})()"
-            elif storage_action == "delete":
-                if not key:
-                    return ToolResult(output="storage delete requires 'storage_key'", is_error=True)
-                js = f"(() => {{ {store}.removeItem({json.dumps(key)}); return {{ok: true}}; }})()"
-            elif storage_action == "clear":
-                js = f"(() => {{ {store}.clear(); return {{ok: true}}; }})()"
-            elif storage_action == "list":
-                js = f"(() => {{ const keys = []; for (let i = 0; i < {store}.length; i++) {{ keys.push({store}.key(i)); }} return {{keys}}; }})()"
-            else:
-                return ToolResult(output=f"Unsupported storage action: {storage_action}", is_error=True)
+            return ToolResult(output=f"Unsupported storage action: {storage_action}", is_error=True)
 
         try:
             result = await self._exec("eval", js, "--json")
@@ -2239,6 +2283,38 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(
                 output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
                 details={"storage_type": storage_type, "action": storage_action, "key": key},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"storage failed: {exc}", is_error=True)
+
+    async def _try_cdp_then_fallback(
+        self,
+        cdp_js: str,
+        fallback_js: str,
+        storage_type: str,
+        storage_action: str,
+        key: str,
+    ) -> ToolResult:
+        """Try CDP cookie API first, fall back to JS document.cookie on failure."""
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("ok"):
+                return ToolResult(
+                    output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                    details={"storage_type": storage_type, "action": storage_action, "key": key, "method": "cdp"},
+                )
+        except Exception:
+            pass
+        # Fallback to JS
+        try:
+            result = await self._exec("eval", fallback_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            return ToolResult(
+                output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                details={"storage_type": storage_type, "action": storage_action, "key": key, "method": "js_fallback"},
             )
         except Exception as exc:
             return ToolResult(output=f"storage failed: {exc}", is_error=True)
