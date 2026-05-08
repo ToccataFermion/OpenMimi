@@ -64,11 +64,12 @@ python scripts/xft_advanced_login.py
 | `scroll_into_view` | Bring element into viewport |
 | `wait_for` | Poll until element/text appears |
 | `wait_for_navigation` | Wait for URL change after SPA navigation |
+| `wait_for_network_idle` | Wait until no active network requests for a duration |
 
 ### Network & Debugging
 | Action | Description |
 |--------|-------------|
-| `network_log` | Intercept fetch/XHR requests |
+| `network_log` | Intercept fetch/XHR requests and capture response status/body |
 | `network_modify` | Inject headers, block URLs, mock responses, override UA |
 | `console` | Capture recent browser console logs |
 | `pdf` | Save page as PDF |

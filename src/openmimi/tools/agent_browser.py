@@ -56,7 +56,7 @@ _TOOL_DESCRIPTION = (
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
-    "intercepts fetch/XHR requests to discover hidden API endpoints. "
+    "intercepts fetch/XHR requests and captures response status codes and bodies to discover hidden API endpoints. "
     "Network modification: action='network_modify' with 'modify_action' can inject headers, "
     "block URLs by pattern, mock responses, or override User-Agent. Use this to bypass "
     "anti-bot detection or inject auth tokens into API requests. "
@@ -1678,7 +1678,7 @@ class AgentBrowserTool(ToolBase):
         )
 
     async def _do_network_log(self, inp: dict[str, Any]) -> ToolResult:
-        """Inject JS to intercept network requests and return captured traffic."""
+        """Inject JS to intercept network requests and responses, then return captured traffic."""
         duration_ms = inp.get("duration_ms", 5000)
         filter_text = inp.get("filter", "")
         js = f"""
@@ -1689,7 +1689,8 @@ class AgentBrowserTool(ToolBase):
                 if (filter) {{
                     filtered = captured.filter(r =>
                         r.url.includes(filter) ||
-                        (r.body && r.body.includes(filter))
+                        (r.body && r.body.includes(filter)) ||
+                        (r.responseBody && r.responseBody.includes(filter))
                     );
                 }}
                 return {{
@@ -1698,26 +1699,38 @@ class AgentBrowserTool(ToolBase):
                 }};
             }})()
         """
-        # First, ensure the interceptor is installed
+        # Install interceptor that captures both requests and responses
         setup_js = """
             (() => {
                 if (window.__openmimi_network_hooked) return {ok: true, already: true};
                 window.__openmimi_captured_requests = [];
+                const _maxBody = 1000;
+                const _store = (entry) => {
+                    window.__openmimi_captured_requests.push(entry);
+                    if (window.__openmimi_captured_requests.length > 200) {
+                        window.__openmimi_captured_requests.shift();
+                    }
+                };
                 const origFetch = window.fetch;
                 window.fetch = function(...args) {
                     const url = args[0] instanceof Request ? args[0].url : String(args[0]);
                     const options = args[1] || {};
-                    window.__openmimi_captured_requests.push({
+                    const entry = {
                         type: 'fetch',
                         url: url,
                         method: options.method || 'GET',
                         body: options.body ? String(options.body).substring(0, 500) : null,
                         time: Date.now(),
-                    });
-                    if (window.__openmimi_captured_requests.length > 200) {
-                        window.__openmimi_captured_requests.shift();
-                    }
-                    return origFetch.apply(this, args);
+                    };
+                    const p = origFetch.apply(this, args);
+                    p.then(r => {
+                        entry.status = r.status;
+                        entry.statusText = r.statusText;
+                        const clone = r.clone();
+                        clone.text().then(t => { entry.responseBody = t.substring(0, _maxBody); }).catch(() => {});
+                    }).catch(e => { entry.error = e.message; });
+                    _store(entry);
+                    return p;
                 };
                 const origXHR = window.XMLHttpRequest.prototype.open;
                 const origXHRSend = window.XMLHttpRequest.prototype.send;
@@ -1727,16 +1740,23 @@ class AgentBrowserTool(ToolBase):
                     return origXHR.call(this, method, url, ...rest);
                 };
                 window.XMLHttpRequest.prototype.send = function(body) {
-                    window.__openmimi_captured_requests.push({
+                    const entry = {
                         type: 'xhr',
                         url: this._om_url,
                         method: this._om_method || 'GET',
                         body: body ? String(body).substring(0, 500) : null,
                         time: Date.now(),
-                    });
-                    if (window.__openmimi_captured_requests.length > 200) {
-                        window.__openmimi_captured_requests.shift();
-                    }
+                    };
+                    const self = this;
+                    const onLoad = () => {
+                        entry.status = self.status;
+                        entry.statusText = self.statusText;
+                        entry.responseBody = (self.responseText || "").substring(0, _maxBody);
+                    };
+                    const onError = () => { entry.error = "XHR failed"; };
+                    this.addEventListener("load", onLoad);
+                    this.addEventListener("error", onError);
+                    _store(entry);
                     return origXHRSend.call(this, body);
                 };
                 window.__openmimi_network_hooked = true;

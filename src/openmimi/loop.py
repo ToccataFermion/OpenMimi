@@ -132,6 +132,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- agent_browser extract: structured data extraction with instruction='headings'/'links'/'forms'/'tables'/'metadata'/'images'.\n"
     "- agent_browser pdf: save the current page as a PDF file for archiving or review.\n"
     "- agent_browser console: capture recent browser console logs to debug JavaScript errors.\n"
+    "- agent_browser network_log: intercept fetch/XHR and capture response status codes and bodies. "
+    "  Use this to discover hidden API endpoints and inspect JSON responses.\n"
     "- agent_browser network_modify: inject headers, block URLs, mock responses, or override User-Agent. "
     "  Use modify_action='inject_headers' with headers={'X-Custom': 'value'} to add request headers. "
     "  Use modify_action='block_urls' with url_patterns=['tracker.com'] to block tracking scripts. "

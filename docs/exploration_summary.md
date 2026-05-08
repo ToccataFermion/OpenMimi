@@ -82,8 +82,9 @@ DL 解法流程：
 
 | 动作 | 说明 |
 |------|------|
-| `network_log` | JS 拦截 fetch/XHR，记录请求日志 |
+| `network_log` | JS 拦截 fetch/XHR，记录请求日志 + 响应状态码/Body（用于 API 逆向） |
 | `network_modify` | 修改网络行为：注入 headers、阻断 URL、mock 响应、覆盖 UA |
+| `wait_for_network_idle` | 等待无活跃网络请求持续指定时长（SPA 异步加载友好） |
 | `console` | 捕获浏览器 console.log/error/warn/info |
 | `pdf` | 保存当前页面为 PDF（CDP printToPDF） |
 | `page_source` | 获取当前页面原始 HTML |
