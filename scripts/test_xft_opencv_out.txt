@@ -1,0 +1,128 @@
+Step 1: Navigate to xft
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab --json
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed open https://xft.cmbchina.com/ --json --session-name openmimi_6540_1778204065
+[agent-browser result] rc=0 stdout_len=103 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab --json
+[agent-browser result] rc=0 stdout_len=164 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab --json
+[agent-browser result] rc=0 stdout_len=164 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed snapshot --json
+[agent-browser result] rc=0 stdout_len=18183 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed screenshot C:\Users\xx\AppData\Local\Temp\agent_browser_screenshots\ab_1778204090140.png --json
+[agent-browser result] rc=0 stdout_len=132 stderr_len=0
+Step 2: Click login tab
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed find text 登录 click --json
+[agent-browser result] rc=0 stdout_len=86 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab --json
+[agent-browser result] rc=0 stdout_len=293 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab t2 --json
+[agent-browser result] rc=0 stdout_len=136 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed tab --json
+[agent-browser result] rc=0 stdout_len=293 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed screenshot C:\Users\xx\AppData\Local\Temp\agent_browser_screenshots\ab_1778204095946.png --json
+[agent-browser result] rc=0 stdout_len=132 stderr_len=0
+Step 3: Fill credentials
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed eval 
+                (() => {
+                    const inputs = Array.from(document.querySelectorAll('input.ant-input'));
+                    const phone = inputs.find(el => el.type === 'text');
+                    const pass = inputs.find(el => el.type === 'password');
+                    const checkbox = document.querySelector('input.ant-checkbox-input');
+                    function setReactValue(element, value) {
+                        const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        valueSetter.call(element, value);
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                        element.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (phone) setReactValue(phone, '18584828398');
+                    if (pass) setReactValue(pass, 'Liszt123');
+                    if (checkbox && !checkbox.checked) checkbox.click();
+                    return {ok: true};
+                })()
+             --json
+[agent-browser result] rc=0 stdout_len=103 stderr_len=0
+Step 4: Click login to trigger CAPTCHA
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed eval 
+                (() => {
+                    const btn = document.querySelector('div[class*="PasswordLogin_loginBtn"]');
+                    if (btn) {
+                        ['mousedown', 'mouseup', 'click'].forEach(type => {
+                            btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                        });
+                    }
+                    return {clicked: !!btn};
+                })()
+             --json
+[agent-browser result] rc=0 stdout_len=108 stderr_len=0
+Step 5: Get CAPTCHA images and coordinates
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed eval 
+                (() => {
+                    const btn = document.querySelector('.imageVerifyDragButton');
+                    const drag = document.querySelector('.dragImage');
+                    const bg = document.querySelector('.bottomImage');
+
+                    function getSrc(el) {
+                        if (!el) return null;
+                        if (el.src) return el.src;
+                        const style = window.getComputedStyle(el);
+                        const m = style.backgroundImage.match(/url\(["']?(data:image\/[^"']+)["']?\)/);
+                        return m ? m[1] : null;
+                    }
+
+                    function rectInfo(el) {
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        return {left: r.left, top: r.top, width: r.width, height: r.height};
+                    }
+
+                    return {
+                        hasButton: !!btn,
+                        hasDrag: !!drag,
+                        hasBg: !!bg,
+                        btnRect: rectInfo(btn),
+                        dragRect: rectInfo(drag),
+                        bgRect: rectInfo(bg),
+                        bgSrc: getSrc(bg),
+                        dragSrc: getSrc(drag),
+                        screenX: window.screenX,
+                        screenY: window.screenY,
+                        innerWidth: window.innerWidth,
+                        innerHeight: window.innerHeight,
+                        outerWidth: window.outerWidth,
+                        outerHeight: window.outerHeight,
+                    };
+                })()
+             --json
+[agent-browser result] rc=0 stdout_len=189655 stderr_len=0
+  CAPTCHA data keys: ['bgRect', 'bgSrc', 'btnRect', 'dragRect', 'dragSrc', 'hasBg', 'hasButton', 'hasDrag', 'innerHeight', 'innerWidth', 'outerHeight', 'outerWidth', 'screenX', 'screenY']
+  bgSrc prefix: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAVQA...
+  dragSrc prefix: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAE4A...
+  Saved images: bg=(278, 340, 3), piece=(278, 78, 3)
+  Grayscale match: x=122, conf=0.171
+  Edge match: x=211, conf=0.111
+  Binary match: x=233, conf=0.202
+  Best match: x=233, confidence=0.202
+  Viewport drag: (419, 550) -> (652, 550)
+  Screen drag:   (436, 647) -> (669, 647)
+Step 6: Focus browser window
+Step 7: OS-level drag using ComputerTool
+Step 8: Check result
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed snapshot --json
+[agent-browser result] rc=0 stdout_len=3277 stderr_len=0
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed screenshot C:\Users\xx\AppData\Local\Temp\agent_browser_screenshots\ab_1778204106813.png --json
+[agent-browser result] rc=0 stdout_len=132 stderr_len=0
+  CAPTCHA may have failed. Page still shows login.
+  Snapshot preview: A CAPTCHA challenge is present on the page. Type: slider. You may analyze the screenshot to solve it.
+
+Snapshot:
+- generic
+  - generic
+    - heading "简体中文 返回官网" [level=2, ref=e1]
+      - generic [ref=e2] clickable [cursor:pointer]
+        - StaticText "简体中文"
+      - generic [ref=e3] clickable [curso
+
+Keeping browser open for 5s...
+[agent-browser exec] C:\Users\xx\AppData\Roaming\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe --headed close --all
+[agent-browser result] rc=0 stdout_len=25 stderr_len=0
+Browser closed.

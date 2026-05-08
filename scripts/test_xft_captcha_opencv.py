@@ -165,13 +165,9 @@ async def main() -> None:
             "action": "eval",
             "js": """
                 (() => {
-                    const btn = document.querySelector('div[class*="PasswordLogin_loginBtn"]');
-                    if (btn) {
-                        ['mousedown', 'mouseup', 'click'].forEach(type => {
-                            btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
-                        });
-                    }
-                    return {clicked: !!btn};
+                    const btn = document.querySelector('.PasswordLogin_loginBtn__yuCsm');
+                    if (btn) { btn.click(); return {clicked: true, class: btn.className}; }
+                    return {clicked: false};
                 })()
             """,
         })
@@ -275,12 +271,10 @@ async def main() -> None:
         log(f"  Screen drag:   ({start_sx}, {start_sy}) -> ({end_sx}, {end_sy})")
 
         log("Step 6: Focus browser window")
-        win_info = find_browser_window()
-        if win_info:
-            focus_window(win_info[0])
-            await asyncio.sleep(0.5)
+        await browser({"action": "focus"})
+        await asyncio.sleep(0.5)
 
-        log("Step 7: OS-level drag using ComputerTool")
+        log("Step 7: OS-level slow drag using ComputerTool")
         await computer({
             "action": "mouse_drag",
             "x": start_sx,
@@ -288,7 +282,8 @@ async def main() -> None:
             "end_x": end_sx,
             "end_y": end_sy,
             "button": "left",
-            "steps": 40,
+            "steps": 80,
+            "delay_ms": 25,
         })
         await asyncio.sleep(2.0)
 
