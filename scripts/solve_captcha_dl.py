@@ -48,25 +48,27 @@ async def login_flow(browser: AgentBrowserTool) -> bool:
         return False
 
     log("=== Fill Form ===")
+    phone_num = os.environ.get('XFT_PHONE', '18584828398')
+    password = os.environ.get('XFT_PASSWORD', 'Liszt123')
     await browser({
         "action": "eval",
-        "js": """
-            (() => {
+        "js": f"""
+            (() => {{
                 const inputs = Array.from(document.querySelectorAll('input.ant-input'));
                 const phone = inputs.find(el => el.type === 'text');
                 const pass = inputs.find(el => el.type === 'password');
                 const checkbox = document.querySelector('input.ant-checkbox-input');
-                function setReactValue(element, value) {
+                function setReactValue(element, value) {{
                     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                     valueSetter.call(element, value);
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                if (phone) setReactValue(phone, '18584828398');
-                if (pass) setReactValue(pass, 'Liszt123');
+                    element.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                if (phone) setReactValue(phone, '{phone_num}');
+                if (pass) setReactValue(pass, '{password}');
                 if (checkbox && !checkbox.checked) checkbox.click();
-                return {hasPhone: !!phone, hasPass: !!pass, hasCheckbox: !!checkbox};
-            })()
+                return {{hasPhone: !!phone, hasPass: !!pass, hasCheckbox: !!checkbox}};
+            }})()
         """,
     })
 
