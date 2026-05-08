@@ -50,6 +50,8 @@ _TOOL_DESCRIPTION = (
     "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
+    "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
+    "intercepts fetch/XHR requests to discover hidden API endpoints. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -155,6 +157,7 @@ class AgentBrowserTool(ToolBase):
                             "clipboard",
                             "get_box",
                             "wait_for",
+                            "network_log",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -272,6 +275,14 @@ class AgentBrowserTool(ToolBase):
                         "type": "integer",
                         "description": "Polling interval in milliseconds for wait_for (default 500).",
                     },
+                    "duration_ms": {
+                        "type": "integer",
+                        "description": "Duration in milliseconds to capture network traffic (action='network_log', default 5000).",
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "Filter string for network_log to only show URLs/requests containing this text.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -337,6 +348,7 @@ class AgentBrowserTool(ToolBase):
             "clipboard": self._do_clipboard,
             "get_box": self._do_get_box,
             "wait_for": self._do_wait_for,
+            "network_log": self._do_network_log,
         }
         handler = handlers.get(action)
         if not handler:
@@ -743,6 +755,17 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"Eval error: {err}", is_error=True)
         data = raw.get("data", {})
         result_value = data.get("result") if isinstance(data, dict) else None
+        # If result is null/undefined/empty, return more context so the caller
+        # can diagnose whether the JS ran but had no return, or something else.
+        if result_value is None or result_value == {} or result_value == []:
+            return ToolResult(
+                output=(
+                    f"eval result is empty/null. "
+                    f"Make sure your JS ends with an explicit return value "
+                    f"inside an IIFE like (() => {{ ...; return value; }})(). "
+                    f"Raw data: {json.dumps(data, ensure_ascii=False)[:500]}"
+                )
+            )
         return ToolResult(
             output=json.dumps(result_value, ensure_ascii=False, indent=2)
         )
@@ -945,6 +968,89 @@ class AgentBrowserTool(ToolBase):
             output=f"wait_for timed out after {timeout_ms}ms: {selector or text}",
             is_error=True,
         )
+
+    async def _do_network_log(self, inp: dict[str, Any]) -> ToolResult:
+        """Inject JS to intercept network requests and return captured traffic."""
+        duration_ms = inp.get("duration_ms", 5000)
+        filter_text = inp.get("filter", "")
+        js = f"""
+            (() => {{
+                const captured = window.__openmimi_captured_requests || [];
+                let filtered = captured;
+                const filter = {json.dumps(filter_text)};
+                if (filter) {{
+                    filtered = captured.filter(r =>
+                        r.url.includes(filter) ||
+                        (r.body && r.body.includes(filter))
+                    );
+                }}
+                return {{
+                    count: filtered.length,
+                    requests: filtered.slice(-20)
+                }};
+            }})()
+        """
+        # First, ensure the interceptor is installed
+        setup_js = """
+            (() => {
+                if (window.__openmimi_network_hooked) return {ok: true, already: true};
+                window.__openmimi_captured_requests = [];
+                const origFetch = window.fetch;
+                window.fetch = function(...args) {
+                    const url = args[0] instanceof Request ? args[0].url : String(args[0]);
+                    const options = args[1] || {};
+                    window.__openmimi_captured_requests.push({
+                        type: 'fetch',
+                        url: url,
+                        method: options.method || 'GET',
+                        body: options.body ? String(options.body).substring(0, 500) : null,
+                        time: Date.now(),
+                    });
+                    if (window.__openmimi_captured_requests.length > 200) {
+                        window.__openmimi_captured_requests.shift();
+                    }
+                    return origFetch.apply(this, args);
+                };
+                const origXHR = window.XMLHttpRequest.prototype.open;
+                const origXHRSend = window.XMLHttpRequest.prototype.send;
+                window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                    this._om_method = method;
+                    this._om_url = url;
+                    return origXHR.call(this, method, url, ...rest);
+                };
+                window.XMLHttpRequest.prototype.send = function(body) {
+                    window.__openmimi_captured_requests.push({
+                        type: 'xhr',
+                        url: this._om_url,
+                        method: this._om_method || 'GET',
+                        body: body ? String(body).substring(0, 500) : null,
+                        time: Date.now(),
+                    });
+                    if (window.__openmimi_captured_requests.length > 200) {
+                        window.__openmimi_captured_requests.shift();
+                    }
+                    return origXHRSend.call(this, body);
+                };
+                window.__openmimi_network_hooked = true;
+                return {ok: true, already: false};
+            })()
+        """
+        try:
+            setup_result = await self._exec("eval", setup_js, "--json")
+            setup_data = self._parse_data(setup_result.stdout)
+            if duration_ms > 0:
+                await asyncio.sleep(duration_ms / 1000.0)
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            requests = data.get("requests", []) if isinstance(data, dict) else []
+            return ToolResult(
+                output=json.dumps(data, ensure_ascii=False, indent=2)[:4000],
+                details={"requests": requests},
+            )
+        except Exception as exc:
+            return ToolResult(
+                output=f"network_log failed: {exc}", is_error=True
+            )
 
     async def _do_close(self) -> ToolResult:
         if self._started:
