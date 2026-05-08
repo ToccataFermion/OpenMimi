@@ -16,6 +16,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from openmimi.tools.agent_browser import AgentBrowserTool
 
 
+def safe_print(label: str, text: str | None, max_len: int = 2000) -> None:
+    """Print text safely handling Windows console encoding issues."""
+    text = text or ""
+    snippet = text[:max_len]
+    try:
+        print(f"{label}\n{snippet}")
+    except UnicodeEncodeError:
+        # Encode to GBK with replacements, then decode back for printing
+        safe = snippet.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8", errors="replace")
+        print(f"{label}\n{safe}")
+
+
 async def main() -> None:
     download_dir = tempfile.mkdtemp(prefix="openmimi_ab_")
     tool = AgentBrowserTool(
@@ -35,7 +47,7 @@ async def main() -> None:
         print("Step 2: Snapshot to discover elements")
         print("=" * 60)
         result = await tool({"action": "snapshot"})
-        print(f"Snapshot:\n{result.output[:2000]}")
+        safe_print("Snapshot:", result.output)
         print(f"Refs: {result.details.get('refs', {})}")
 
         print("\n" + "=" * 60)
@@ -49,7 +61,7 @@ async def main() -> None:
         print("Step 4: Snapshot popup")
         print("=" * 60)
         result = await tool({"action": "snapshot"})
-        print(f"Snapshot:\n{result.output[:2000]}")
+        safe_print("Snapshot:", result.output)
 
         print("\n" + "=" * 60)
         print("Step 5: Click '密码登录' by text")
@@ -64,56 +76,59 @@ async def main() -> None:
         print(f"Result: {result.output}")
 
         print("\n" + "=" * 60)
-        print("Step 7: Fill credentials via eval")
+        print("Step 7: Fill credentials via eval (native setter)")
         print("=" * 60)
         result = await tool({
             "action": "eval",
             "js": """
                 (() => {
-                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    function setNativeValue(el, val) {
-                        if (!el) return;
-                        nativeSetter.call(el, val);
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    const inputs = Array.from(document.querySelectorAll('input.ant-input'));
+                    const phone = inputs.find(el => el.type === 'text');
+                    const pass = inputs.find(el => el.type === 'password');
+                    const checkbox = document.querySelector('input.ant-checkbox-input');
+                    function setReactValue(element, value) {
+                        const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        valueSetter.call(element, value);
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                        element.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                    const inputs = Array.from(document.querySelectorAll('input')).filter(i => {
-                        const r = i.getBoundingClientRect();
-                        return r.width > 0 && r.height > 0;
-                    });
-                    const phone = inputs.find(i => i.type === 'text');
-                    const pass = inputs.find(i => i.type === 'password');
-                    const cb = inputs.find(i => i.type === 'checkbox');
-                    setNativeValue(phone, '18584828398');
-                    setNativeValue(pass, 'Liszt123');
-                    if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change', {bubbles: true})); }
-                    return {phone: phone ? phone.value : null, pass: pass ? pass.value : null};
+                    if (phone) setReactValue(phone, '18584828398');
+                    if (pass) setReactValue(pass, 'Liszt123');
+                    if (checkbox && !checkbox.checked) checkbox.click();
+                    return {phone: phone?.value, pass: pass?.value, checked: checkbox?.checked};
                 })()
             """,
         })
-        print(f"Result: {result.output}")
+        print(f"Fill result: {result.output}")
 
         print("\n" + "=" * 60)
-        print("Step 8: Click login button by text (fallback to focus+Enter if click fails)")
+        print("Step 8: Click login button via eval (React SPA compatible)")
         print("=" * 60)
-        result = await tool({"action": "click", "target_text": "登录"})
+        result = await tool({
+            "action": "eval",
+            "js": """
+                (() => {
+                    const btn = document.querySelector('div[class*="PasswordLogin_loginBtn"]');
+                    if (!btn) return {error: 'button not found'};
+                    btn.focus();
+                    ['mousedown', 'mouseup', 'click'].forEach(type => {
+                        btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                    });
+                    return {clicked: true, class: btn.className?.slice(0, 40)};
+                })()
+            """,
+        })
         print(f"Click result: {result.output}")
-        # If click didn't cause navigation, try focus + Enter
-        await asyncio.sleep(1.0)
-        result = await tool({"action": "snapshot"})
-        if "xft.cmbchina.com" in (result.output or "") and "dashboard" not in (result.output or "").lower():
-            print("Page unchanged after click, trying focus + Enter fallback...")
-            result = await tool({"action": "hover", "target_text": "登录"})
-            print(f"Hover result: {result.output}")
-            result = await tool({"action": "press", "key": "Enter"})
-            print(f"Enter result: {result.output}")
+        await asyncio.sleep(2.0)
 
         print("\n" + "=" * 60)
         print("Step 9: Wait and snapshot for CAPTCHA or dashboard")
         print("=" * 60)
-        await tool({"action": "wait", "milliseconds": 3000})
+        await asyncio.sleep(3.0)
         result = await tool({"action": "snapshot"})
-        print(f"Snapshot:\n{result.output[:2000]}")
+        safe_print("Snapshot:", result.output)
+        if result.is_error and result.details and result.details.get("captcha_detected"):
+            print("\n[CAPTCHA DETECTED] Human intervention required to complete slider puzzle.")
 
         print("\n" + "=" * 60)
         print("Step 10: Click customer service icon")
@@ -124,7 +139,7 @@ async def main() -> None:
 
         await tool({"action": "wait", "milliseconds": 2000})
         result = await tool({"action": "snapshot"})
-        print(f"Snapshot after CS click:\n{result.output[:2000]}")
+        safe_print("Snapshot after CS click:", result.output)
 
         print("\n" + "=" * 60)
         print("Step 11: Click 在线客服")
@@ -134,7 +149,7 @@ async def main() -> None:
 
         await tool({"action": "wait", "milliseconds": 2000})
         result = await tool({"action": "snapshot"})
-        print(f"Final snapshot:\n{result.output[:2000]}")
+        safe_print("Final snapshot:", result.output)
 
         print("\nKeeping browser open for 10s...")
         await asyncio.sleep(10.0)

@@ -1,4 +1,4 @@
-"""Diagnose why CAPTCHA stopped appearing."""
+"""Try 222px drag with longer wait and better diagnostics."""
 from __future__ import annotations
 
 import asyncio
@@ -60,7 +60,7 @@ async def main() -> None:
         })
         await asyncio.sleep(0.5)
 
-        log("Step 4: Click login button")
+        log("Step 4: Click login to trigger CAPTCHA")
         await tool({
             "action": "eval",
             "js": """
@@ -85,49 +85,65 @@ async def main() -> None:
                 (() => {
                     const btn = document.querySelector('.imageVerifyDragButton');
                     const modal = document.querySelector('.ant-modal-content');
-                    const modalBody = document.querySelector('.ant-modal-body');
                     const verify = document.querySelector('.xftImageVerify');
-                    const errorMsg = document.querySelector('.ant-form-item-explain-error');
-                    const toast = document.querySelector('.ant-message-notice-content');
-
-                    // Check for any visible text about rate limiting, errors, etc.
-                    const bodyText = document.body.innerText.slice(0, 500);
-
                     return {
                         hasButton: !!btn,
                         hasModal: !!modal,
                         hasVerify: !!verify,
-                        hasError: !!errorMsg,
-                        hasToast: !!toast,
-                        errorText: errorMsg ? errorMsg.innerText.trim().slice(0, 100) : null,
-                        toastText: toast ? toast.innerText.trim().slice(0, 100) : null,
-                        bodyText: bodyText,
-                        modalHTML: modal ? modal.outerHTML.slice(0, 500) : null
+                        btnRect: btn ? {x: btn.getBoundingClientRect().x, y: btn.getBoundingClientRect().y, w: btn.getBoundingClientRect().width, h: btn.getBoundingClientRect().height} : null
                     };
                 })()
             """,
         })
-        log(f"  State: {result.output}")
+        state = json.loads(result.output or "{}")
+        log(f"  State: {state}")
 
-        log("Step 6: Snapshot")
+        if not state.get("hasButton"):
+            log("  No CAPTCHA button found, aborting")
+            # Take snapshot to see what's there
+            result = await tool({"action": "snapshot"})
+            log(f"  Snapshot (first 200 chars): {result.output[:200] if result.output else 'empty'}")
+            return
+
+        btn_rect = state["btnRect"]
+        start_x = int(btn_rect["x"] + btn_rect["w"] / 2)
+        start_y = int(btn_rect["y"] + btn_rect["h"] / 2)
+        distance = 222
+
+        log(f"Step 6: Drag button from ({start_x}, {start_y}) by {distance}px")
+        await tool._exec("mouse", "move", str(start_x), str(start_y), "--json")
+        await asyncio.sleep(0.2)
+        await tool._exec("mouse", "down", "--json")
+        await asyncio.sleep(0.2)
+
+        steps = 30
+        for i in range(1, steps + 1):
+            t = i / steps
+            ease = 1 - (1 - t) ** 3
+            cx = start_x + int(distance * ease)
+            cy = start_y + (i % 3 - 1)
+            await tool._exec("mouse", "move", str(cx), str(cy), "--json")
+            await asyncio.sleep(0.03 + (i % 5) * 0.005)
+
+        await tool._exec("mouse", "up", "--json")
+        await asyncio.sleep(0.3)
+        log("  Drag complete")
+
+        await asyncio.sleep(3.0)
+
+        log("Step 7: Check result")
         result = await tool({"action": "snapshot"})
         text = result.output or ""
         log(f"  Snapshot len: {len(text)}")
-        log(f"  Contains slider: {'滑块' in text}")
-        log(f"  Contains puzzle: {'拼图' in text}")
-        log(f"  Contains fail: {'验证失败' in text}")
-        log(f"  Contains success: {'验证成功' in text}")
-        log(f"  Contains password login: {'密码登录' in text}")
-        log(f"  Contains rate limit: {'频繁' in text}")
-        log(f"  Contains error: {'错误' in text}")
+        log(f"  Contains '滑块': {'滑块' in text}")
+        log(f"  Contains '拼图': {'拼图' in text}")
+        log(f"  Contains '验证失败': {'验证失败' in text}")
+        log(f"  Contains '验证成功': {'验证成功' in text}")
+        log(f"  Contains '工作台': {'工作台' in text}")
+        log(f"  Contains '密码登录': {'密码登录' in text}")
 
-        log("Step 7: Screenshot")
-        screenshot_path = os.path.join(download_dir, "diagnose.png")
-        await tool({"action": "screenshot", "path": screenshot_path})
-        log(f"  Screenshot: {screenshot_path}")
-
-        log("\nKeeping browser open for 10s...")
-        await asyncio.sleep(10.0)
+        log("\nKeeping browser open for 5s...")
+        await asyncio.sleep(5.0)
 
     finally:
         await tool.close()

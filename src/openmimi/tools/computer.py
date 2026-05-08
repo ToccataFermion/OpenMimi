@@ -32,6 +32,9 @@ _TOOL_DESCRIPTION = (
     "- screenshot: capture the entire desktop\n"
     "- mouse_move x y: move cursor to (x, y)\n"
     "- mouse_click [x y] [button=left|right]: click at coordinates or current position\n"
+    "- mouse_down [button=left|right]: press and hold mouse button at current position\n"
+    "- mouse_up [button=left|right]: release mouse button at current position\n"
+    "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20]: drag with bezier smoothing\n"
     "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
     "- type text: type a string"
@@ -190,6 +193,9 @@ class ComputerTool(ToolBase):
                             "screenshot",
                             "mouse_move",
                             "mouse_click",
+                            "mouse_down",
+                            "mouse_up",
+                            "mouse_drag",
                             "mouse_scroll",
                             "key_press",
                             "type",
@@ -221,6 +227,18 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Text to type.",
                     },
+                    "end_x": {
+                        "type": "integer",
+                        "description": "End X coordinate for drag (absolute screen pixels).",
+                    },
+                    "end_y": {
+                        "type": "integer",
+                        "description": "End Y coordinate for drag (absolute screen pixels).",
+                    },
+                    "steps": {
+                        "type": "integer",
+                        "description": "Number of intermediate points for drag smoothing (default 20).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -238,6 +256,9 @@ class ComputerTool(ToolBase):
             "screenshot": self._do_screenshot,
             "mouse_move": self._do_mouse_move,
             "mouse_click": self._do_mouse_click,
+            "mouse_down": self._do_mouse_down,
+            "mouse_up": self._do_mouse_up,
+            "mouse_drag": self._do_mouse_drag,
             "mouse_scroll": self._do_mouse_scroll,
             "key_press": self._do_key_press,
             "type": self._do_type,
@@ -298,6 +319,69 @@ class ComputerTool(ToolBase):
         time.sleep(0.05)
         self._send_mouse_event(up_flag)
         return ToolResult(output=f"Mouse {button} clicked")
+
+    async def _do_mouse_down(self, inp: dict[str, Any]) -> ToolResult:
+        button = inp.get("button", "left")
+        x = inp.get("x")
+        y = inp.get("y")
+        if x is not None and y is not None:
+            await self._do_mouse_move({"x": x, "y": y})
+            time.sleep(0.05)
+        down_flag = {
+            "left": MOUSEEVENTF_LEFTDOWN,
+            "right": MOUSEEVENTF_RIGHTDOWN,
+            "middle": MOUSEEVENTF_MIDDLEDOWN,
+        }.get(button, MOUSEEVENTF_LEFTDOWN)
+        self._send_mouse_event(down_flag)
+        return ToolResult(output=f"Mouse {button} down")
+
+    async def _do_mouse_up(self, inp: dict[str, Any]) -> ToolResult:
+        button = inp.get("button", "left")
+        x = inp.get("x")
+        y = inp.get("y")
+        if x is not None and y is not None:
+            await self._do_mouse_move({"x": x, "y": y})
+            time.sleep(0.05)
+        up_flag = {
+            "left": MOUSEEVENTF_LEFTUP,
+            "right": MOUSEEVENTF_RIGHTUP,
+            "middle": MOUSEEVENTF_MIDDLEUP,
+        }.get(button, MOUSEEVENTF_LEFTUP)
+        self._send_mouse_event(up_flag)
+        return ToolResult(output=f"Mouse {button} up")
+
+    async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
+        """Drag from (x,y) to (end_x,end_y) with optional bezier smoothing."""
+        import random
+        start_x = inp.get("x", 0)
+        start_y = inp.get("y", 0)
+        end_x = inp.get("end_x", start_x)
+        end_y = inp.get("end_y", start_y)
+        button = inp.get("button", "left")
+        steps = max(2, min(inp.get("steps", 20), 200))
+        # Move to start
+        await self._do_mouse_move({"x": start_x, "y": start_y})
+        time.sleep(0.05)
+        # Mouse down
+        await self._do_mouse_down({"button": button})
+        time.sleep(0.05)
+        # Bezier control point with small random jitter
+        cx = (start_x + end_x) // 2 + random.randint(-30, 30)
+        cy = (start_y + end_y) // 2 + random.randint(-10, 10)
+        for i in range(1, steps + 1):
+            t = i / steps
+            bx = int((1 - t) ** 2 * start_x + 2 * (1 - t) * t * cx + t ** 2 * end_x)
+            by = int((1 - t) ** 2 * start_y + 2 * (1 - t) * t * cy + t ** 2 * end_y)
+            bx += random.randint(-1, 1)
+            by += random.randint(-1, 1)
+            await self._do_mouse_move({"x": bx, "y": by})
+            time.sleep(0.01)
+        # Final position
+        await self._do_mouse_move({"x": end_x, "y": end_y})
+        time.sleep(0.05)
+        # Mouse up
+        await self._do_mouse_up({"button": button})
+        return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)

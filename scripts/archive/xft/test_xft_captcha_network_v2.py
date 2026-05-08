@@ -1,4 +1,4 @@
-"""Diagnose why CAPTCHA stopped appearing."""
+"""Monitor network requests during CAPTCHA drag - save to file and filter."""
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +28,11 @@ async def main() -> None:
     )
 
     try:
-        log("Step 1: Navigate")
+        log("Step 1: Navigate and login")
         await tool({"action": "navigate", "url": "https://xft.cmbchina.com/"})
         await asyncio.sleep(1.0)
-
-        log("Step 2: Click login")
         await tool({"action": "click", "target_text": "登录"})
         await asyncio.sleep(2.0)
-
-        log("Step 3: Fill credentials")
         await tool({
             "action": "eval",
             "js": """
@@ -59,8 +55,6 @@ async def main() -> None:
             """,
         })
         await asyncio.sleep(0.5)
-
-        log("Step 4: Click login button")
         await tool({
             "action": "eval",
             "js": """
@@ -78,56 +72,70 @@ async def main() -> None:
         })
         await asyncio.sleep(3.0)
 
-        log("Step 5: Inspect page state")
         result = await tool({
             "action": "eval",
             "js": """
                 (() => {
                     const btn = document.querySelector('.imageVerifyDragButton');
-                    const modal = document.querySelector('.ant-modal-content');
-                    const modalBody = document.querySelector('.ant-modal-body');
-                    const verify = document.querySelector('.xftImageVerify');
-                    const errorMsg = document.querySelector('.ant-form-item-explain-error');
-                    const toast = document.querySelector('.ant-message-notice-content');
-
-                    // Check for any visible text about rate limiting, errors, etc.
-                    const bodyText = document.body.innerText.slice(0, 500);
-
-                    return {
-                        hasButton: !!btn,
-                        hasModal: !!modal,
-                        hasVerify: !!verify,
-                        hasError: !!errorMsg,
-                        hasToast: !!toast,
-                        errorText: errorMsg ? errorMsg.innerText.trim().slice(0, 100) : null,
-                        toastText: toast ? toast.innerText.trim().slice(0, 100) : null,
-                        bodyText: bodyText,
-                        modalHTML: modal ? modal.outerHTML.slice(0, 500) : null
-                    };
+                    return {hasButton: !!btn};
                 })()
             """,
         })
-        log(f"  State: {result.output}")
+        if not json.loads(result.output or "{}").get("hasButton"):
+            log("  No CAPTCHA, aborting")
+            return
 
-        log("Step 6: Snapshot")
+        log("Step 2: Clear network and perform drag")
+        await tool._exec("network", "requests", "--clear", "--json")
+
+        # Simple drag
+        await tool._exec("mouse", "move", "489", "462", "--json")
+        await asyncio.sleep(0.2)
+        await tool._exec("mouse", "down", "--json")
+        await asyncio.sleep(0.2)
+        await tool._exec("mouse", "move", "600", "462", "--json")
+        await asyncio.sleep(0.3)
+        await tool._exec("mouse", "up", "--json")
+        await asyncio.sleep(2.0)
+
+        log("Step 3: Get network requests")
+        result = await tool._exec("network", "requests", "--json")
+        network_data = result.output or "[]"
+
+        # Save to file
+        network_path = os.path.join(download_dir, "network.json")
+        with open(network_path, "w", encoding="utf-8") as f:
+            f.write(network_data)
+        log(f"  Saved network data to {network_path}")
+
+        # Parse and filter
+        try:
+            requests = json.loads(network_data)
+            log(f"  Total requests: {len(requests)}")
+            keywords = ["captcha", "verify", "validate", "slide", "check", "auth", "login", "token", "challenge"]
+            interesting = []
+            for req in requests:
+                url = req.get("url", "").lower()
+                if any(k in url for k in keywords):
+                    interesting.append({
+                        "url": req.get("url"),
+                        "method": req.get("method"),
+                        "status": req.get("status"),
+                        "timing": req.get("timing"),
+                    })
+            log(f"  Interesting requests: {len(interesting)}")
+            for req in interesting[:20]:
+                log(f"    {req['method']} {req['status']} {req['url'][:120]}")
+        except Exception as e:
+            log(f"  Error parsing network data: {e}")
+
+        log("Step 4: Check result")
         result = await tool({"action": "snapshot"})
         text = result.output or ""
-        log(f"  Snapshot len: {len(text)}")
-        log(f"  Contains slider: {'滑块' in text}")
-        log(f"  Contains puzzle: {'拼图' in text}")
-        log(f"  Contains fail: {'验证失败' in text}")
-        log(f"  Contains success: {'验证成功' in text}")
-        log(f"  Contains password login: {'密码登录' in text}")
-        log(f"  Contains rate limit: {'频繁' in text}")
-        log(f"  Contains error: {'错误' in text}")
-
-        log("Step 7: Screenshot")
-        screenshot_path = os.path.join(download_dir, "diagnose.png")
-        await tool({"action": "screenshot", "path": screenshot_path})
-        log(f"  Screenshot: {screenshot_path}")
-
-        log("\nKeeping browser open for 10s...")
-        await asyncio.sleep(10.0)
+        log(f"  Has slider: {'滑块' in text}")
+        log(f"  Has puzzle: {'拼图' in text}")
+        log(f"  Has fail: {'验证失败' in text}")
+        log(f"  Has success: {'验证成功' in text}")
 
     finally:
         await tool.close()

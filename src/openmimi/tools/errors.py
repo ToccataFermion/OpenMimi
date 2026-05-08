@@ -4,7 +4,13 @@ Full taxonomy will be expanded in later milestones (per SDD appendix).
 """
 from __future__ import annotations
 
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        pass
 
 
 class ErrorCode(StrEnum):
@@ -12,3 +18,4 @@ class ErrorCode(StrEnum):
     TIMEOUT = "TIMEOUT"
     NAVIGATION_ERROR = "NAVIGATION_ERROR"
     TOOL_INTERNAL_ERROR = "TOOL_INTERNAL_ERROR"
+    CAPTCHA_DETECTED = "CAPTCHA_DETECTED"

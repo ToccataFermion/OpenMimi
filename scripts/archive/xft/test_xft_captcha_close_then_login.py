@@ -1,4 +1,4 @@
-"""Diagnose why CAPTCHA stopped appearing."""
+"""Close CAPTCHA via onCloseVerify then retry login."""
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +28,11 @@ async def main() -> None:
     )
 
     try:
-        log("Step 1: Navigate")
+        log("Step 1: Navigate and login")
         await tool({"action": "navigate", "url": "https://xft.cmbchina.com/"})
         await asyncio.sleep(1.0)
-
-        log("Step 2: Click login")
         await tool({"action": "click", "target_text": "登录"})
         await asyncio.sleep(2.0)
-
-        log("Step 3: Fill credentials")
         await tool({
             "action": "eval",
             "js": """
@@ -59,8 +55,6 @@ async def main() -> None:
             """,
         })
         await asyncio.sleep(0.5)
-
-        log("Step 4: Click login button")
         await tool({
             "action": "eval",
             "js": """
@@ -78,56 +72,71 @@ async def main() -> None:
         })
         await asyncio.sleep(3.0)
 
-        log("Step 5: Inspect page state")
         result = await tool({
             "action": "eval",
             "js": """
                 (() => {
                     const btn = document.querySelector('.imageVerifyDragButton');
-                    const modal = document.querySelector('.ant-modal-content');
-                    const modalBody = document.querySelector('.ant-modal-body');
-                    const verify = document.querySelector('.xftImageVerify');
-                    const errorMsg = document.querySelector('.ant-form-item-explain-error');
-                    const toast = document.querySelector('.ant-message-notice-content');
-
-                    // Check for any visible text about rate limiting, errors, etc.
-                    const bodyText = document.body.innerText.slice(0, 500);
-
-                    return {
-                        hasButton: !!btn,
-                        hasModal: !!modal,
-                        hasVerify: !!verify,
-                        hasError: !!errorMsg,
-                        hasToast: !!toast,
-                        errorText: errorMsg ? errorMsg.innerText.trim().slice(0, 100) : null,
-                        toastText: toast ? toast.innerText.trim().slice(0, 100) : null,
-                        bodyText: bodyText,
-                        modalHTML: modal ? modal.outerHTML.slice(0, 500) : null
-                    };
+                    return {hasButton: !!btn};
                 })()
             """,
         })
-        log(f"  State: {result.output}")
+        if not json.loads(result.output or "{}").get("hasButton"):
+            log("  No CAPTCHA, proceeding to check login")
+        else:
+            log("Step 2: Close CAPTCHA via onCloseVerify")
+            await tool({
+                "action": "eval",
+                "js": """
+                    (() => {
+                        const verify = document.querySelector('.xftImageVerify');
+                        const keys = Object.keys(verify);
+                        const reactKey = keys.find(k => k.startsWith('__reactInternalInstance') || k.startsWith('__reactFiber'));
+                        const fiber = verify[reactKey];
+                        let node = fiber;
+                        for (let i = 0; i < 50 && node; i++) {
+                            if (node.memoizedProps && node.memoizedProps.onCloseVerify) {
+                                node.memoizedProps.onCloseVerify();
+                                return {closed: true, depth: i};
+                            }
+                            node = node.return;
+                        }
+                        return {closed: false};
+                    })()
+                """,
+            })
+            await asyncio.sleep(1.0)
 
-        log("Step 6: Snapshot")
+        log("Step 3: Retry login")
+        await tool({
+            "action": "eval",
+            "js": """
+                (() => {
+                    const btn = document.querySelector('div[class*="PasswordLogin_loginBtn"]');
+                    if (btn) {
+                        btn.focus();
+                        ['mousedown', 'mouseup', 'click'].forEach(type => {
+                            btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+                        });
+                    }
+                    return {clicked: !!btn};
+                })()
+            """,
+        })
+        await asyncio.sleep(3.0)
+
+        log("Step 4: Check result")
         result = await tool({"action": "snapshot"})
         text = result.output or ""
-        log(f"  Snapshot len: {len(text)}")
-        log(f"  Contains slider: {'滑块' in text}")
-        log(f"  Contains puzzle: {'拼图' in text}")
-        log(f"  Contains fail: {'验证失败' in text}")
-        log(f"  Contains success: {'验证成功' in text}")
-        log(f"  Contains password login: {'密码登录' in text}")
-        log(f"  Contains rate limit: {'频繁' in text}")
-        log(f"  Contains error: {'错误' in text}")
+        log(f"  Has slider: {'滑块' in text}")
+        log(f"  Has puzzle: {'拼图' in text}")
+        log(f"  Has fail: {'验证失败' in text}")
+        log(f"  Has success: {'验证成功' in text}")
+        log(f"  Has workbench: {'工作台' in text}")
+        log(f"  Has password login: {'密码登录' in text}")
 
-        log("Step 7: Screenshot")
-        screenshot_path = os.path.join(download_dir, "diagnose.png")
-        await tool({"action": "screenshot", "path": screenshot_path})
-        log(f"  Screenshot: {screenshot_path}")
-
-        log("\nKeeping browser open for 10s...")
-        await asyncio.sleep(10.0)
+        log("\nKeeping browser open for 5s...")
+        await asyncio.sleep(5.0)
 
     finally:
         await tool.close()

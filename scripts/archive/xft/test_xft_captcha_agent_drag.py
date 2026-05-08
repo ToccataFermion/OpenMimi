@@ -1,4 +1,4 @@
-"""Diagnose why CAPTCHA stopped appearing."""
+"""Try agent-browser's native drag command."""
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +28,11 @@ async def main() -> None:
     )
 
     try:
-        log("Step 1: Navigate")
+        log("Step 1: Navigate and login")
         await tool({"action": "navigate", "url": "https://xft.cmbchina.com/"})
         await asyncio.sleep(1.0)
-
-        log("Step 2: Click login")
         await tool({"action": "click", "target_text": "登录"})
         await asyncio.sleep(2.0)
-
-        log("Step 3: Fill credentials")
         await tool({
             "action": "eval",
             "js": """
@@ -59,8 +55,6 @@ async def main() -> None:
             """,
         })
         await asyncio.sleep(0.5)
-
-        log("Step 4: Click login button")
         await tool({
             "action": "eval",
             "js": """
@@ -78,56 +72,64 @@ async def main() -> None:
         })
         await asyncio.sleep(3.0)
 
-        log("Step 5: Inspect page state")
         result = await tool({
             "action": "eval",
             "js": """
                 (() => {
                     const btn = document.querySelector('.imageVerifyDragButton');
-                    const modal = document.querySelector('.ant-modal-content');
-                    const modalBody = document.querySelector('.ant-modal-body');
-                    const verify = document.querySelector('.xftImageVerify');
-                    const errorMsg = document.querySelector('.ant-form-item-explain-error');
-                    const toast = document.querySelector('.ant-message-notice-content');
+                    return {hasButton: !!btn};
+                })()
+            """,
+        })
+        if not json.loads(result.output or "{}").get("hasButton"):
+            log("  No CAPTCHA, aborting")
+            return
 
-                    // Check for any visible text about rate limiting, errors, etc.
-                    const bodyText = document.body.innerText.slice(0, 500);
-
+        log("Step 2: Get button position for drag target")
+        result = await tool({
+            "action": "eval",
+            "js": """
+                (() => {
+                    const btn = document.querySelector('.imageVerifyDragButton');
+                    const container = document.querySelector('.imageVerifyDrag');
+                    const cr = container.getBoundingClientRect();
+                    const br = btn.getBoundingClientRect();
                     return {
-                        hasButton: !!btn,
-                        hasModal: !!modal,
-                        hasVerify: !!verify,
-                        hasError: !!errorMsg,
-                        hasToast: !!toast,
-                        errorText: errorMsg ? errorMsg.innerText.trim().slice(0, 100) : null,
-                        toastText: toast ? toast.innerText.trim().slice(0, 100) : null,
-                        bodyText: bodyText,
-                        modalHTML: modal ? modal.outerHTML.slice(0, 500) : null
+                        btnX: br.x,
+                        btnY: br.y,
+                        btnW: br.width,
+                        btnH: br.height,
+                        containerW: cr.width
                     };
                 })()
             """,
         })
-        log(f"  State: {result.output}")
+        pos = json.loads(result.output or "{}")
+        log(f"  Positions: {pos}")
 
-        log("Step 6: Snapshot")
+        start_x = int(pos["btnX"] + pos["btnW"] / 2)
+        start_y = int(pos["btnY"] + pos["btnH"] / 2)
+        end_x = start_x + 200
+        end_y = start_y
+
+        log(f"Step 3: Try agent-browser drag from ({start_x},{start_y}) to ({end_x},{end_y})")
+        # Try: drag .imageVerifyDragButton coordinate
+        result = await tool._exec("drag", ".imageVerifyDragButton", f"{end_x},{end_y}", "--json")
+        log(f"  Drag result: {result.output[:500] if result.output else 'empty'}")
+
+        await asyncio.sleep(3.0)
+
+        log("Step 4: Check result")
         result = await tool({"action": "snapshot"})
         text = result.output or ""
-        log(f"  Snapshot len: {len(text)}")
-        log(f"  Contains slider: {'滑块' in text}")
-        log(f"  Contains puzzle: {'拼图' in text}")
-        log(f"  Contains fail: {'验证失败' in text}")
-        log(f"  Contains success: {'验证成功' in text}")
-        log(f"  Contains password login: {'密码登录' in text}")
-        log(f"  Contains rate limit: {'频繁' in text}")
-        log(f"  Contains error: {'错误' in text}")
+        log(f"  Has slider: {'滑块' in text}")
+        log(f"  Has puzzle: {'拼图' in text}")
+        log(f"  Has fail: {'验证失败' in text}")
+        log(f"  Has success: {'验证成功' in text}")
+        log(f"  Has workbench: {'工作台' in text}")
 
-        log("Step 7: Screenshot")
-        screenshot_path = os.path.join(download_dir, "diagnose.png")
-        await tool({"action": "screenshot", "path": screenshot_path})
-        log(f"  Screenshot: {screenshot_path}")
-
-        log("\nKeeping browser open for 10s...")
-        await asyncio.sleep(10.0)
+        log("\nKeeping browser open for 5s...")
+        await asyncio.sleep(5.0)
 
     finally:
         await tool.close()

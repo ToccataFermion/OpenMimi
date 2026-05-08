@@ -16,6 +16,7 @@ class BrowserConfig(BaseModel):
     download_dir: Path = Path("data/downloads")
     viewport_width: int = 1280
     viewport_height: int = 800
+    args: list[str] = Field(default_factory=list)
 
 
 class StorageConfig(BaseModel):

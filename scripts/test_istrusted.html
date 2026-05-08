@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><title>isTrusted test</title></head>
+<body>
+<div id="box" style="width:300px;height:200px;background:#eee;margin:50px;padding:20px;">
+  Click or drag here
+</div>
+<pre id="log"></pre>
+<script>
+const box = document.getElementById('box');
+const log = document.getElementById('log');
+function add(msg) {
+  log.textContent += msg + '\n';
+}
+['mousedown','mouseup','click','mousemove','pointerdown','pointerup','pointermove'].forEach(type => {
+  box.addEventListener(type, e => {
+    add(type + ': isTrusted=' + e.isTrusted + ' pointerType=' + (e.pointerType || 'n/a') + ' buttons=' + e.buttons);
+  });
+});
+</script>
+</body>
+</html>

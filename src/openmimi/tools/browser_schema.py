@@ -9,7 +9,12 @@ Design:
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal
+try:
+    from typing import Self
+except ImportError:
+    from typing import TypeVar
+    Self = TypeVar("Self")
 
 from pydantic import (
     BaseModel,
