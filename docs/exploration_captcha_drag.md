@@ -124,11 +124,95 @@ total_time ≈ 2.0s   # Enough for JS event handlers to keep up
 interpolation = linear  # Bezier jitter may be okay but untested
 ```
 
+### Phase 7: Async Validation Test (Disproven)
+**Hypothesis:** The CAPTCHA validates asynchronously after the drag ends, requiring a wait.
+
+**Test:** `debug_captcha_wait.py` performs a 150px slow drag then polls DOM state every second for 10 seconds.
+
+**Result:** FAIL. At t=1s: handle=150px, puzzle=139.858px. By t=2s: both snap back to 0px. The CAPTCHA resets immediately on validation failure.
+
+**Conclusion:** Validation is synchronous (~1s). Waiting longer doesn't help.
+
+### Phase 8: Fine Brute Force (Inconclusive)
+**Hypothesis:** The correct distance was missed due to coarse 20px increments.
+
+**Test:** `debug_captcha_fine.py` tests 80-240px in 5px increments on fresh CAPTCHA instances.
+
+**Result:** INCONCLUSIVE. Login flakiness prevented reliable execution. Need more robust retry logic.
+
+### Phase 9: OpenCV Image Analysis (Partial)
+**Hypothesis:** Computer vision can find the gap position in the background image.
+
+**Test:** Extract `.bottomImage` and `.dragImage`, run template matching, edge detection, and bright-pixel analysis.
+
+**Result:** Template matching finds the puzzle piece's CURRENT position (x=45), not the gap. The background image is a complete photograph without an obvious "hole". The gap is likely rendered client-side via CSS overlay or border.
+
+**Key finding:** The isolated background image doesn't expose the gap location. Vision must analyze the RENDERED screenshot, not the raw image asset.
+
+### Phase 10: Direct JS Position Manipulation (Failed)
+**Hypothesis:** Bypass drag entirely by setting `style.left` directly and dispatching synthetic events.
+
+**Test:** `debug_captcha_js_set.py` sets handle/puzzle `left` to 100-260px and dispatches mouseup/change events.
+
+**Result:** FAIL. The CAPTCHA modal stays open for all positions. The validation requires actual trusted mouse events, not just CSS position changes.
+
+### Phase 11: Coordinate Verification
+**Hypothesis:** The mouse might not be landing exactly on the handle, causing validation to fail.
+
+**Test:** `debug_captcha_hover.py` moves mouse to computed handle center and checks `elementFromPoint`.
+
+**Result:** `elementFromPoint` returns a child SPAN, not the handle DIV (`isHandle: false`). However, a mini drag (10px) still successfully moves the handle, confirming mouse events bubble correctly. The child element issue is not the root cause.
+
+**Additional finding:** Window metrics at CAPTCHA time:
+- `screenX=10, screenY=10`
+- `outerWidth=1132, outerHeight=892`
+- `innerWidth=1118, innerHeight=798`
+- Handle viewport center: (419, 550)
+- Handle screen center: (436, 647)
+
+### Phase 12: Handle-to-Puzzle Scaling Factor
+**Observation:** When dragging the handle, the puzzle piece doesn't move 1:1.
+
+**Data:**
+- Handle at 10px → puzzle at 9.32px
+- Handle at 150px → puzzle at 139.86px
+
+**Formula:** `handle_drag = puzzle_gap * (track_width - handle_width) / (bg_width - puzzle_width)`
+- Track width = 340px, handle width = 60px → handle range = 280px
+- BG width = 340px, puzzle width = 78px → puzzle range = 262px
+- Scaling factor: 280/262 = **1.0687**
+
+**Critical implication:** Earlier brute-force distances were handle distances. A 200px handle drag only moves the puzzle 187px. The gap might be at ~200px puzzle position, requiring ~214px handle drag.
+
+---
+
+## Current Working Hypothesis
+
+The CAPTCHA validation likely checks:
+1. **Trusted mouse events** (satisfied by SendInput)
+2. **Slow drag trajectory** (satisfied by 80 steps, 25ms delay)
+3. **Exact final position** within a small tolerance (~2-5px)
+4. **Mouse on handle element** during drag (events bubble from child SPAN, so this is satisfied)
+
+The remaining unknown is the **correct gap position per instance**.
+
+## Tested Approaches Summary
+
+| Approach | Result | Notes |
+|----------|--------|-------|
+| CDP synthetic drag | FAIL | isTrusted check |
+| Fast OS drag (20 steps) | PARTIAL | Handle moves, puzzle doesn't |
+| Slow OS drag (80 steps) | SUCCESS | Both handle and puzzle move |
+| Brute force 50-260px | FAIL | Coarse increments; scaling not accounted for |
+| Wait for async validation | FAIL | Resets within 1-2s |
+| OpenCV on raw images | PARTIAL | Finds current position, not gap |
+| Direct JS set + events | FAIL | Requires trusted events |
+| Vision model analysis | IN PROGRESS | Needs reliable per-instance screenshot |
+
 ## Next Steps
 
-1. Update `computer.py` `mouse_drag` to allow configurable delay between steps (currently hardcoded at 10ms).
-2. Update system prompt to instruct LLM to use high `steps` (e.g., 80-100) for CAPTCHA drags.
-3. End-to-end test: Login → screenshot → LLM visual analysis → compute gap offset → slow drag → verify.
-4. The gap offset can be computed by:
-   - LLM analyzes screenshot to find handle and gap positions in screen pixels
-   - Or use OpenCV template matching between `.bottomImage` and `.dragImage`
+1. **Implement vision-based gap detection:** Use the orchestrator's screenshot → LLM vision loop to estimate gap position per CAPTCHA instance.
+2. **Account for scaling:** Convert vision-estimated puzzle gap to handle drag distance using factor 1.0687.
+3. **Add login retry logic:** The CAPTCHA doesn't appear consistently; add robust form-filling and button-click verification.
+4. **Test end-to-end:** Login → CAPTCHA screenshot → vision estimate → scaled drag → verify.
+5. **Fallback strategy:** If vision estimate is off, try ±5px and ±10px offsets before giving up.
