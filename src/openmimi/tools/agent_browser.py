@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..utils.env_flags import screenshots_disabled
 from .base import ToolBase
 from .errors import ErrorCode
 from .result import ToolResult
@@ -1265,6 +1266,11 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"emulate_device failed: {exc}", is_error=True)
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
+        if screenshots_disabled():
+            return ToolResult(
+                output="Screenshots disabled (OPENMIMI_DISABLE_SCREENSHOTS).",
+                base64_image=None,
+            )
         path = inp.get("path")
         annotate = inp.get("annotate", False)
         image = await self._take_screenshot(path_override=path, annotate=annotate)
@@ -2530,6 +2536,8 @@ class AgentBrowserTool(ToolBase):
             await self._refresh_tabs()
 
     async def _take_screenshot(self, path_override: str | None = None, annotate: bool = False) -> str | None:
+        if screenshots_disabled():
+            return None
         try:
             path = Path(path_override) if path_override else _SCREENSHOT_DIR / f"ab_{int(time.time() * 1000)}.png"
             args = ["screenshot", str(path)]

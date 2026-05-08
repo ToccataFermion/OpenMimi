@@ -6,13 +6,18 @@ start from scratch on the same site every time.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_log = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_DIR = Path("data/memory/sites")
+# Hard cap on injected site-memory text (chars) to avoid unbounded system prompt growth.
+_DEFAULT_SITE_MEMORY_PROMPT_MAX_CHARS = 8192
 
 
 class SiteMemoryStore:
@@ -63,7 +68,27 @@ class SiteMemoryStore:
             parts.append("### Successful paths")
             for sp in mem["success_paths"]:
                 parts.append(f"- {sp}")
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        raw_max = os.environ.get("OPENMIMI_SITE_MEMORY_PROMPT_MAX_CHARS", "").strip()
+        try:
+            max_chars = int(raw_max) if raw_max else _DEFAULT_SITE_MEMORY_PROMPT_MAX_CHARS
+        except ValueError:
+            max_chars = _DEFAULT_SITE_MEMORY_PROMPT_MAX_CHARS
+        if max_chars < 256:
+            max_chars = 256
+        if len(text) > max_chars:
+            _log.warning(
+                "site memory prompt for domain=%s exceeds max_chars=%d (len=%d); truncating",
+                domain,
+                max_chars,
+                len(text),
+            )
+            suffix = "\n\n[site memory truncated: OPENMIMI_SITE_MEMORY_PROMPT_MAX_CHARS]"
+            budget = max_chars - len(suffix)
+            if budget < 64:
+                budget = 64
+            text = text[:budget] + suffix
+        return text
 
     def merge(self, domain: str, new_memory: dict[str, Any]) -> dict[str, Any]:
         """Merge new_memory into existing memory for domain."""
