@@ -61,7 +61,8 @@ _TOOL_DESCRIPTION = (
     "  Useful for interacting with native apps where you cannot use coordinates.\n"
     "- window_manage title window_action [x y width height]: manage windows by title substring. "
     "  Actions: move, resize, minimize, maximize, restore, close.\n"
-    "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
+    "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care).\n"
+    "- batch steps [bail=true]: execute multiple actions in one call. Each item in 'steps' is an object with 'action' and its parameters. Stops on first error unless bail=false."
 )
 
 # Windows input constants
@@ -289,6 +290,7 @@ class ComputerTool(ToolBase):
                             "click_text",
                             "window_manage",
                             "shell",
+                            "batch",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -414,6 +416,15 @@ class ComputerTool(ToolBase):
                         "enum": ["move", "resize", "minimize", "maximize", "restore", "close"],
                         "description": "Window operation for action='window_manage'.",
                     },
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of action objects for action='batch'. Each object should have an 'action' key and the corresponding parameters.",
+                    },
+                    "bail": {
+                        "type": "boolean",
+                        "description": "For action='batch', stop on first error (default true).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -453,6 +464,7 @@ class ComputerTool(ToolBase):
             "click_text": self._do_click_text,
             "window_manage": self._do_window_manage,
             "shell": self._do_shell,
+            "batch": self._do_batch,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -1335,6 +1347,56 @@ class ComputerTool(ToolBase):
             return ToolResult(output=f"shell timed out after {timeout}s", is_error=True)
         except Exception as exc:
             return ToolResult(output=f"shell error: {exc}", is_error=True)
+
+    async def _do_batch(self, inp: dict[str, Any]) -> ToolResult:
+        """Execute multiple computer actions sequentially in one tool call."""
+        steps = inp.get("steps", [])
+        if not isinstance(steps, list) or not steps:
+            return ToolResult(output="batch requires 'steps' array", is_error=True)
+        bail = inp.get("bail", True)
+        outputs = []
+        final_result = None
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                outputs.append(f"Step {i + 1}: invalid step (not an object)")
+                if bail:
+                    break
+                continue
+            action = step.get("action", "")
+            if not action:
+                outputs.append(f"Step {i + 1}: missing action")
+                if bail:
+                    break
+                continue
+            try:
+                result = await self._dispatch(action, step)
+                final_result = result
+                prefix = f"Step {i + 1} ({action}):"
+                if result.is_error:
+                    outputs.append(f"{prefix} ERROR - {result.output}")
+                    if bail:
+                        break
+                else:
+                    outputs.append(f"{prefix} OK - {result.output}")
+            except Exception as exc:
+                outputs.append(f"Step {i + 1} ({action}): EXCEPTION - {exc}")
+                if bail:
+                    break
+        summary = "\n".join(outputs)
+        # Return final screenshot if available, or capture a new one
+        image = final_result.base64_image if final_result and final_result.base64_image else None
+        if image is None:
+            try:
+                screenshot_result = await self._do_screenshot({})
+                image = screenshot_result.base64_image
+            except Exception:
+                pass
+        has_error = any("ERROR" in line or "EXCEPTION" in line or "invalid" in line or "missing" in line for line in outputs)
+        return ToolResult(
+            output=summary,
+            is_error=has_error if bail else False,
+            base64_image=image,
+        )
 
     # ------------------------------------------------------------------ #
     #  Low-level helpers
