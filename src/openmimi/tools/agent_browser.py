@@ -66,6 +66,8 @@ _TOOL_DESCRIPTION = (
     "Console: action='console' returns recent browser console logs (errors, warnings, info). "
     "Clear data: action='clear_cache' wipes cookies, localStorage, and sessionStorage. "
     "Viewport: action='set_viewport' with 'width' and 'height' resizes the browser window. "
+    "Device emulation: action='emulate_device' with 'device_name' (iPhone 14, Pixel 7, iPad Mini, reset) "
+    "sets viewport, DPR, and user agent for mobile testing.\n"
     "Session persistence: action='save_session' with 'file_path' persists cookies/storage; "
     "action='load_session' with 'file_path' restores them to avoid repeated logins. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
@@ -376,6 +378,7 @@ class AgentBrowserTool(ToolBase):
                             "scroll_into_view",
                             "page_source",
                             "wait_for_navigation",
+                            "emulate_device",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -576,6 +579,11 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "For action='wait_for_navigation': substring expected in the URL after navigation.",
                     },
+                    "device_name": {
+                        "type": "string",
+                        "enum": ["iPhone 14", "iPhone 14 Pro Max", "Pixel 7", "iPad Mini", "reset"],
+                        "description": "Device preset for action='emulate_device'. Use 'reset' to restore desktop.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -653,6 +661,7 @@ class AgentBrowserTool(ToolBase):
             "scroll_into_view": self._do_scroll_into_view,
             "page_source": self._do_page_source,
             "wait_for_navigation": self._do_wait_for_navigation,
+            "emulate_device": self._do_emulate_device,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1054,6 +1063,81 @@ class AgentBrowserTool(ToolBase):
             output=f"wait_for_navigation timed out after {timeout_ms}ms (URL did not change from {start_url})",
             is_error=True,
         )
+
+    async def _do_emulate_device(self, inp: dict[str, Any]) -> ToolResult:
+        """Emulate a mobile device via CDP or JS fallback."""
+        device_name = inp.get("device_name", "iPhone 14")
+        _DEVICE_PRESETS: dict[str, dict[str, Any]] = {
+            "iPhone 14": {"width": 390, "height": 844, "deviceScaleFactor": 3, "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1", "mobile": True, "touch": True},
+            "iPhone 14 Pro Max": {"width": 430, "height": 932, "deviceScaleFactor": 3, "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1", "mobile": True, "touch": True},
+            "Pixel 7": {"width": 412, "height": 915, "deviceScaleFactor": 2.625, "userAgent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36", "mobile": True, "touch": True},
+            "iPad Mini": {"width": 768, "height": 1024, "deviceScaleFactor": 2, "userAgent": "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1", "mobile": True, "touch": True},
+            "reset": {"width": 1280, "height": 800, "deviceScaleFactor": 1, "userAgent": "", "mobile": False, "touch": False},
+        }
+        preset = _DEVICE_PRESETS.get(device_name, _DEVICE_PRESETS["iPhone 14"])
+        width = int(preset["width"])
+        height = int(preset["height"])
+        dpr = float(preset["deviceScaleFactor"])
+        ua = preset["userAgent"]
+        mobile = preset["mobile"]
+        touch = preset["touch"]
+
+        # Try CDP Emulation.setDeviceMetricsOverride first
+        cdp_js = f"""
+        (async () => {{
+            try {{
+                await window.__openmimi_cdp_send('Emulation.setDeviceMetricsOverride', {{
+                    width: {width},
+                    height: {height},
+                    deviceScaleFactor: {dpr},
+                    mobile: {str(mobile).lower()},
+                }});
+                {'await window.__openmimi_cdp_send("Emulation.setUserAgentOverride", {userAgent: ' + json.dumps(ua) + '});' if ua else ''}
+                return {{ok: true, method: 'cdp', device: {json.dumps(device_name)}}};
+            }} catch (e) {{
+                return {{error: e.message, note: 'CDP emulation failed'}};
+            }}
+        }})()
+        """
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("ok"):
+                image = await self._take_screenshot()
+                return ToolResult(
+                    output=f"Emulating {device_name}: {width}x{height} @ {dpr}x DPR",
+                    base64_image=image,
+                    details={"device": device_name, "width": width, "height": height, "dpr": dpr},
+                )
+        except Exception:
+            pass
+
+        # Fallback: JS-only viewport + UA override
+        js = f"""
+        (() => {{
+            window.resizeTo({width}, {height});
+            {'Object.defineProperty(navigator, "userAgent", {get: () => ' + json.dumps(ua) + ', configurable: true});' if ua else ''}
+            return {{
+                width: window.innerWidth,
+                height: window.innerHeight,
+                device: {json.dumps(device_name)},
+                method: 'js_fallback',
+            }};
+        }})()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            image = await self._take_screenshot()
+            return ToolResult(
+                output=f"Emulating {device_name} (JS fallback): {json.dumps(result_value, ensure_ascii=False)[:500]}",
+                base64_image=image,
+                details={"device": device_name, "width": width, "height": height, "dpr": dpr},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"emulate_device failed: {exc}", is_error=True)
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         path = inp.get("path")

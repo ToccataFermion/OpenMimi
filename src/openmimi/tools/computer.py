@@ -933,17 +933,41 @@ class ComputerTool(ToolBase):
 
     async def _do_type(self, inp: dict[str, Any]) -> ToolResult:
         text = str(inp.get("text", ""))
-        for ch in text:
-            vk = _VK_MAP.get(ch.lower())
-            if vk is not None:
-                self._send_key_event(vk, False)
-                time.sleep(0.01)
-                self._send_key_event(vk, True)
-                time.sleep(0.01)
-            else:
-                # Fallback: use keybd_event for unmapped chars (simplified)
-                pass
-        return ToolResult(output=f"Typed {len(text)} character(s)")
+        # Check if all chars are ASCII and have VK mappings
+        all_ascii = all(ord(ch) < 128 for ch in text)
+        all_mappable = all(_VK_MAP.get(ch.lower()) is not None for ch in text if ch.strip())
+        if all_ascii and all_mappable:
+            for ch in text:
+                vk = _VK_MAP.get(ch.lower())
+                if vk is not None:
+                    self._send_key_event(vk, False)
+                    time.sleep(0.01)
+                    self._send_key_event(vk, True)
+                    time.sleep(0.01)
+            return ToolResult(output=f"Typed {len(text)} character(s)")
+        # For Unicode / non-mappable text, use clipboard paste
+        try:
+            import win32clipboard
+            import win32con
+        except ImportError:
+            return ToolResult(output="pywin32 required for Unicode typing", is_error=True)
+        try:
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+            win32clipboard.CloseClipboard()
+            # Ctrl+V paste
+            self._send_key_event(_VK_MAP["control"], False)
+            time.sleep(0.02)
+            self._send_key_event(_VK_MAP["v"], False)
+            time.sleep(0.02)
+            self._send_key_event(_VK_MAP["v"], True)
+            time.sleep(0.02)
+            self._send_key_event(_VK_MAP["control"], True)
+            time.sleep(0.05)
+            return ToolResult(output=f"Typed {len(text)} character(s) via clipboard paste")
+        except Exception as exc:
+            return ToolResult(output=f"Unicode typing failed: {exc}", is_error=True)
 
     async def _do_get_screen_info(self, _inp: dict[str, Any]) -> ToolResult:
         """Return primary screen resolution and DPI information."""
