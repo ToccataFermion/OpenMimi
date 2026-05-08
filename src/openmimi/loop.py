@@ -125,6 +125,15 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  target_text='登录' for the submit button because the page has multiple '登录' elements. "
     "  4) If CAPTCHA appears, use pixeldiff via eval JS canvas comparison for gap estimation, "
     "  then apply the 1.069 scaling factor and try ±10px offsets."
+    "\n\n"
+    "Additional capabilities reference:\n"
+    "- agent_browser storage: inspect or modify localStorage, sessionStorage, and cookies. "
+    "  Use storage_action='get' with storage_type='cookies' to read auth tokens.\n"
+    "- agent_browser pdf: save the current page as a PDF file for archiving or review.\n"
+    "- agent_browser console: capture recent browser console logs to debug JavaScript errors.\n"
+    "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
+    "- computer clipboard: read from or write to the system clipboard.\n"
+    "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome')."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
