@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ class SiteMemoryStore:
 
     def save(self, domain: str, memory: dict[str, Any]) -> None:
         path = self._path(domain)
-        memory["last_updated"] = datetime.now(UTC).isoformat(timespec="seconds")
+        memory["last_updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as f:
             json.dump(memory, f, ensure_ascii=False, indent=2)

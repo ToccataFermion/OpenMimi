@@ -210,7 +210,7 @@ async def sampling_loop(
                     result = await asyncio.wait_for(run_coro, timeout=tout)
                 else:
                     result = await run_coro
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 err_text = (
                     f"Tool timed out after {tout}s (OPENMIMI_TOOL_TIMEOUT_S). "

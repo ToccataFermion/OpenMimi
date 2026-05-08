@@ -23,7 +23,7 @@ Each JSONL record has the shape:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ class JsonlAuditLogger:
         duration_ms: int,
     ) -> None:
         record = {
-            "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "session_id": session_id,
             "step": step,
             "tool": tool,
