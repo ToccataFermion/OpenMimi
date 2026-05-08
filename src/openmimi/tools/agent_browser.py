@@ -53,6 +53,11 @@ _TOOL_DESCRIPTION = (
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
     "intercepts fetch/XHR requests to discover hidden API endpoints. "
+    "Network modification: action='network_modify' with 'modify_action' can inject headers, "
+    "block URLs by pattern, mock responses, or override User-Agent. Use this to bypass "
+    "anti-bot detection or inject auth tokens into API requests. "
+    "Extract: action='extract' with 'instruction' retrieves structured data: 'get text', "
+    "'headings', 'links', 'forms', 'tables', 'metadata', 'images'.\n"
     "Storage: action='storage' with 'storage_action' (get/set/delete/clear) and 'storage_type' "
     "(localStorage, sessionStorage, cookies) to read or modify browser storage. "
     "PDF: action='pdf' with 'file_path' saves the current page as a PDF. "
@@ -242,6 +247,7 @@ class AgentBrowserTool(ToolBase):
                             "get_box",
                             "wait_for",
                             "network_log",
+                            "network_modify",
                             "storage",
                             "pdf",
                             "console",
@@ -375,6 +381,28 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "Filter string for network_log to only show URLs/requests containing this text.",
                     },
+                    "modify_action": {
+                        "type": "string",
+                        "enum": ["inject_headers", "block_urls", "mock_response", "user_agent", "clear"],
+                        "description": "Modification type for action='network_modify'.",
+                    },
+                    "headers": {
+                        "type": "object",
+                        "description": "Headers to inject for network_modify inject_headers (key-value pairs).",
+                    },
+                    "url_patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "URL patterns to block or mock for action='network_modify'.",
+                    },
+                    "mock_data": {
+                        "type": "object",
+                        "description": "Mock response data for network_modify mock_response: {status, body, headers}.",
+                    },
+                    "user_agent": {
+                        "type": "string",
+                        "description": "Custom User-Agent string for network_modify user_agent.",
+                    },
                     "storage_action": {
                         "type": "string",
                         "enum": ["get", "set", "delete", "clear", "list"],
@@ -486,6 +514,7 @@ class AgentBrowserTool(ToolBase):
             "get_box": self._do_get_box,
             "wait_for": self._do_wait_for,
             "network_log": self._do_network_log,
+            "network_modify": self._do_network_modify,
             "storage": self._do_storage,
             "pdf": self._do_pdf,
             "console": self._do_console,
@@ -866,7 +895,9 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"Unknown clipboard action: {cb_action}", is_error=True)
 
     async def _do_extract(self, inp: dict[str, Any]) -> ToolResult:
+        """Extract structured data from the page based on instruction."""
         instruction = inp.get("instruction", "get text")
+
         if instruction == "get text":
             result = await self._exec(
                 "eval", "document.body.innerText", "--json"
@@ -874,12 +905,98 @@ class AgentBrowserTool(ToolBase):
             data = self._parse_data(result.stdout)
             text = data.get("result", "")
             return ToolResult(output=text[:4000])
+
+        if instruction == "headings":
+            js = """
+            (() => {
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+                return headings.map(h => ({level: parseInt(h.tagName[1]), text: h.innerText.trim().substring(0, 200)}));
+            })()
+            """
+        elif instruction == "links":
+            js = """
+            (() => {
+                const links = Array.from(document.querySelectorAll('a[href]'));
+                return links.map(a => ({text: (a.innerText || a.textContent).trim().substring(0, 100), href: a.href})).filter(l => l.text || l.href);
+            })()
+            """
+        elif instruction == "forms":
+            js = """
+            (() => {
+                const forms = Array.from(document.querySelectorAll('form'));
+                return forms.map((f, i) => ({
+                    index: i,
+                    action: f.action || null,
+                    method: f.method || 'get',
+                    inputs: Array.from(f.querySelectorAll('input, select, textarea, button')).map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        type: el.type || null,
+                        name: el.name || null,
+                        id: el.id || null,
+                        placeholder: el.placeholder || null,
+                        value: el.value ? String(el.value).substring(0, 100) : null,
+                    }))
+                }));
+            })()
+            """
+        elif instruction == "tables":
+            js = """
+            (() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                return tables.map((t, i) => {
+                    const rows = Array.from(t.querySelectorAll('tr'));
+                    return {
+                        index: i,
+                        rows: rows.map(r => Array.from(r.querySelectorAll('td, th')).map(c => c.innerText.trim().substring(0, 200)))
+                    };
+                });
+            })()
+            """
+        elif instruction == "metadata":
+            js = """
+            (() => {
+                const meta = {};
+                document.querySelectorAll('meta').forEach(m => {
+                    const name = m.getAttribute('name') || m.getAttribute('property') || m.getAttribute('http-equiv');
+                    if (name) meta[name] = m.getAttribute('content');
+                });
+                return {
+                    title: document.title,
+                    url: window.location.href,
+                    description: meta.description || null,
+                    keywords: meta.keywords || null,
+                    ogTitle: meta['og:title'] || null,
+                    ogDescription: meta['og:description'] || null,
+                    ogImage: meta['og:image'] || null,
+                    meta: meta,
+                };
+            })()
+            """
+        elif instruction == "images":
+            js = """
+            (() => {
+                const imgs = Array.from(document.querySelectorAll('img'));
+                return imgs.map((img, i) => ({
+                    index: i,
+                    src: img.src || null,
+                    alt: img.alt || null,
+                    width: img.naturalWidth || img.width || null,
+                    height: img.naturalHeight || img.height || null,
+                })).filter(img => img.src);
+            })()
+            """
         else:
             # Generic extraction via eval
             js = f"({{url: window.location.href, title: document.title, text: document.body.innerText}})"
+
+        try:
             result = await self._exec("eval", js, "--json")
             data = self._parse_data(result.stdout)
-            return ToolResult(output=json.dumps(data.get("result"), ensure_ascii=False, indent=2)[:4000])
+            result_value = data.get("result") if isinstance(data, dict) else None
+            output = json.dumps(result_value, ensure_ascii=False, indent=2)
+            return ToolResult(output=output[:4000], details={"instruction": instruction})
+        except Exception as exc:
+            return ToolResult(output=f"extract failed: {exc}", is_error=True)
 
     async def _do_tab_list(self, inp: dict[str, Any]) -> ToolResult:
         await self._refresh_tabs()
@@ -1245,6 +1362,218 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(
                 output=f"network_log failed: {exc}", is_error=True
             )
+
+    async def _do_network_modify(self, inp: dict[str, Any]) -> ToolResult:
+        """Modify network behavior via JS patching or CDP: inject headers, block URLs,
+        mock responses, or set User-Agent."""
+        modify_action = inp.get("modify_action", "inject_headers")
+
+        if modify_action == "user_agent":
+            ua = inp.get("user_agent", "")
+            if not ua:
+                return ToolResult(output="network_modify user_agent requires 'user_agent'", is_error=True)
+            # Try CDP first, fallback to JS navigator override
+            cdp_js = f"""
+            (async () => {{
+                try {{
+                    await window.__openmimi_cdp_send('Network.setUserAgentOverride', {{userAgent: {json.dumps(ua)}}});
+                    return {{ok: true, method: 'cdp'}};
+                }} catch (e) {{
+                    Object.defineProperty(navigator, 'userAgent', {{
+                        get: () => {json.dumps(ua)},
+                        configurable: true,
+                    }});
+                    return {{ok: true, method: 'js', note: 'CDP failed, used JS override'}};
+                }}
+            }})()
+            """
+            try:
+                result = await self._exec("eval", cdp_js, "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                return ToolResult(
+                    output=f"User-Agent set to: {ua[:80]}...\n{json.dumps(result_value, ensure_ascii=False)[:500]}",
+                    details={"user_agent": ua},
+                )
+            except Exception as exc:
+                return ToolResult(output=f"user_agent modify failed: {exc}", is_error=True)
+
+        if modify_action == "inject_headers":
+            headers = inp.get("headers", {})
+            if not headers:
+                return ToolResult(output="network_modify inject_headers requires 'headers'", is_error=True)
+            headers_json = json.dumps(headers, ensure_ascii=False)
+            js = f"""
+            (() => {{
+                const customHeaders = {headers_json};
+                if (!window.__openmimi_orig_fetch) {{
+                    window.__openmimi_orig_fetch = window.fetch;
+                }}
+                window.fetch = function(resource, init) {{
+                    init = init || {{}};
+                    init.headers = init.headers || {{}};
+                    if (init.headers instanceof Headers) {{
+                        for (const [k, v] of Object.entries(customHeaders)) {{
+                            init.headers.set(k, v);
+                        }}
+                    }} else {{
+                        Object.assign(init.headers, customHeaders);
+                    }}
+                    return window.__openmimi_orig_fetch(resource, init);
+                }};
+                if (!window.__openmimi_orig_xhr_open) {{
+                    window.__openmimi_orig_xhr_open = window.XMLHttpRequest.prototype.open;
+                    window.__openmimi_orig_xhr_send = window.XMLHttpRequest.prototype.send;
+                }}
+                window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+                    this._om_method = method;
+                    this._om_url = url;
+                    this._om_headers = {{}};
+                    return window.__openmimi_orig_xhr_open.call(this, method, url, ...rest);
+                }};
+                const origSetRequestHeader = window.XMLHttpRequest.prototype.setRequestHeader;
+                window.XMLHttpRequest.prototype.setRequestHeader = function(header, value) {{
+                    this._om_headers[header] = value;
+                    return origSetRequestHeader.call(this, header, value);
+                }};
+                window.XMLHttpRequest.prototype.send = function(body) {{
+                    for (const [k, v] of Object.entries(customHeaders)) {{
+                        if (!this._om_headers[k]) {{
+                            origSetRequestHeader.call(this, k, v);
+                        }}
+                    }}
+                    return window.__openmimi_orig_xhr_send.call(this, body);
+                }};
+                return {{ok: true, headers: customHeaders}};
+            }})()
+            """
+            try:
+                result = await self._exec("eval", js, "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                return ToolResult(
+                    output=f"Headers injected: {json.dumps(result_value, ensure_ascii=False)[:500]}",
+                    details={"headers": headers},
+                )
+            except Exception as exc:
+                return ToolResult(output=f"inject_headers failed: {exc}", is_error=True)
+
+        if modify_action == "block_urls":
+            patterns = inp.get("url_patterns", [])
+            if not patterns:
+                return ToolResult(output="network_modify block_urls requires 'url_patterns'", is_error=True)
+            patterns_json = json.dumps(patterns, ensure_ascii=False)
+            js = f"""
+            (() => {{
+                const patterns = {patterns_json};
+                if (!window.__openmimi_orig_fetch) {{
+                    window.__openmimi_orig_fetch = window.fetch;
+                }}
+                window.fetch = function(resource, init) {{
+                    const url = (resource instanceof Request) ? resource.url : String(resource);
+                    for (const p of patterns) {{
+                        if (url.includes(p)) {{
+                            return Promise.reject(new TypeError('Blocked by OpenMimi: ' + p));
+                        }}
+                    }}
+                    return window.__openmimi_orig_fetch(resource, init);
+                }};
+                if (!window.__openmimi_orig_xhr_open) {{
+                    window.__openmimi_orig_xhr_open = window.XMLHttpRequest.prototype.open;
+                    window.__openmimi_orig_xhr_send = window.XMLHttpRequest.prototype.send;
+                }}
+                window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+                    this._om_method = method;
+                    this._om_url = url;
+                    return window.__openmimi_orig_xhr_open.call(this, method, url, ...rest);
+                }};
+                window.XMLHttpRequest.prototype.send = function(body) {{
+                    for (const p of patterns) {{
+                        if (this._om_url && this._om_url.includes(p)) {{
+                            this.dispatchEvent(new Event('error'));
+                            return;
+                        }}
+                    }}
+                    return window.__openmimi_orig_xhr_send.call(this, body);
+                }};
+                return {{ok: true, blocked: patterns}};
+            }})()
+            """
+            try:
+                result = await self._exec("eval", js, "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                return ToolResult(
+                    output=f"URL patterns blocked: {json.dumps(result_value, ensure_ascii=False)[:500]}",
+                    details={"blocked_patterns": patterns},
+                )
+            except Exception as exc:
+                return ToolResult(output=f"block_urls failed: {exc}", is_error=True)
+
+        if modify_action == "mock_response":
+            mock_data = inp.get("mock_data", {})
+            url_patterns = inp.get("url_patterns", [])
+            if not url_patterns or not mock_data:
+                return ToolResult(output="network_modify mock_response requires 'url_patterns' and 'mock_data'", is_error=True)
+            patterns_json = json.dumps(url_patterns, ensure_ascii=False)
+            mock_json = json.dumps(mock_data, ensure_ascii=False)
+            js = f"""
+            (() => {{
+                const patterns = {patterns_json};
+                const mock = {mock_json};
+                if (!window.__openmimi_orig_fetch) {{
+                    window.__openmimi_orig_fetch = window.fetch;
+                }}
+                window.fetch = function(resource, init) {{
+                    const url = (resource instanceof Request) ? resource.url : String(resource);
+                    for (const p of patterns) {{
+                        if (url.includes(p)) {{
+                            const response = new Response(mock.body || '', {{
+                                status: mock.status || 200,
+                                headers: mock.headers || {{'Content-Type': 'application/json'}},
+                            }});
+                            return Promise.resolve(response);
+                        }}
+                    }}
+                    return window.__openmimi_orig_fetch(resource, init);
+                }};
+                return {{ok: true, patterns, mock}};
+            }})()
+            """
+            try:
+                result = await self._exec("eval", js, "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                return ToolResult(
+                    output=f"Mock responses set: {json.dumps(result_value, ensure_ascii=False)[:500]}",
+                    details={"mock_patterns": url_patterns, "mock_data": mock_data},
+                )
+            except Exception as exc:
+                return ToolResult(output=f"mock_response failed: {exc}", is_error=True)
+
+        if modify_action == "clear":
+            js = """
+            (() => {
+                if (window.__openmimi_orig_fetch) {
+                    window.fetch = window.__openmimi_orig_fetch;
+                    window.__openmimi_orig_fetch = null;
+                }
+                if (window.__openmimi_orig_xhr_open) {
+                    window.XMLHttpRequest.prototype.open = window.__openmimi_orig_xhr_open;
+                    window.XMLHttpRequest.prototype.send = window.__openmimi_orig_xhr_send;
+                    window.__openmimi_orig_xhr_open = null;
+                    window.__openmimi_orig_xhr_send = null;
+                }
+                return {ok: true};
+            })()
+            """
+            try:
+                result = await self._exec("eval", js, "--json")
+                return ToolResult(output="Network modifications cleared")
+            except Exception as exc:
+                return ToolResult(output=f"clear failed: {exc}", is_error=True)
+
+        return ToolResult(output=f"Unknown network_modify action: {modify_action}", is_error=True)
 
     async def _do_storage(self, inp: dict[str, Any]) -> ToolResult:
         """Read or modify browser storage: localStorage, sessionStorage, or cookies."""
