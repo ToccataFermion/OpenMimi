@@ -67,18 +67,39 @@ DL 解法流程：
 
 ## 3. 新增工具能力
 
-### 3.1 AgentBrowserTool 新增动作
+### 3.1 AgentBrowserTool 新增动作（第一批次）
 
 | 动作 | 说明 |
 |------|------|
-| `stealth` | 注入 JS 隐藏自动化特征：navigator.webdriver, plugins, languages, permissions.query, chrome.runtime |
+| `stealth` | 注入 JS 隐藏自动化特征 |
 | `clear_cache` | 清除 cookies / localStorage / sessionStorage |
 | `set_viewport` | 调整浏览器窗口大小 |
 | `save_session` | 保存当前页面 URL + cookies + storage 到 JSON |
 | `load_session` | 从 JSON 恢复 session |
 | `scroll_into_view` | 滚动元素进入视口 |
 
-### 3.2 ComputerTool 新增动作
+### 3.2 AgentBrowserTool 新增动作（第二批次）
+
+| 动作 | 说明 |
+|------|------|
+| `network_log` | JS 拦截 fetch/XHR，记录请求日志 |
+| `network_modify` | 修改网络行为：注入 headers、阻断 URL、mock 响应、覆盖 UA |
+| `console` | 捕获浏览器 console.log/error/warn/info |
+| `pdf` | 保存当前页面为 PDF（CDP printToPDF） |
+| `page_source` | 获取当前页面原始 HTML |
+| `wait_for_navigation` | 轮询等待 URL 变化（SPA 友好） |
+| `extract` 增强 | 结构化提取：headings, links, forms, tables, metadata, images |
+| `emulate_device` | 模拟移动设备：iPhone 14, Pixel 7, iPad Mini（CDP + JS fallback） |
+
+### 3.3 AgentBrowserTool 构造函数增强
+
+| 参数 | 说明 |
+|------|------|
+| `proxy` | `--proxy-server` 路由流量 through 代理 |
+| `user_data_dir` | `--user-data-dir` 完整 profile 持久化（IndexedDB, cache, extensions） |
+| `stealth` | 启用 14 项反检测 JS 注入 |
+
+### 3.4 ComputerTool 新增动作
 
 | 动作 | 说明 |
 |------|------|
@@ -86,8 +107,11 @@ DL 解法流程：
 | `get_screen_info` | 返回主显示器分辨率 + DPI |
 | `shell` | 执行 shell 命令（带超时） |
 | `focus_window` 增强 | 返回窗口 rect (left, top, width, height) |
+| `ocr` | Tesseract OCR 提取屏幕区域文字（支持 chi_sim+eng） |
+| `window_manage` | 窗口管理：move, resize, minimize, maximize, restore, close |
+| `type` 增强 | 自动检测 Unicode/中文，无 VK 映射时改用剪贴板粘贴 |
 
-### 3.3 Loop 系统提示词增强
+### 3.5 Loop 系统提示词增强
 
 - 完整的 xft 登录流程指南
 - CAPTCHA 缩放系数和视觉分析指南
@@ -102,24 +126,29 @@ DL 解法流程：
 - 通过 Python f-string 注入到 browser-eval JS 中（process.env 在浏览器环境不可用）
 - 两个活跃脚本已修复并推送
 
-## 5. 下一步方向
+## 5. 脚本更新
 
-基于 2025-2026 浏览器自动化趋势研究：
+- `scripts/xft_advanced_login.py`: 综合演示所有新能力的生产级脚本
+  - persistent profile + stealth headers + network_modify
+  - wait_for 替代固定 sleep
+  - 结构化 extraction 替代 raw eval
+  - page_source 调试 fallback
 
-### 5.1 高优先级
+## 6. 下一步方向
 
-1. **人类化鼠标轨迹** - 当前 `mouse_drag` 是线性移动，应改为 Bézier 曲线 + 加速/减速 + 随机噪声
-2. **Console/Network 日志捕获** - 已写入 system prompt 但未完全实现，用于调试 JS 错误
-3. **Network 拦截** - CDP `Fetch.enable` 修改请求/响应，可用于注入 headers 或屏蔽检测脚本
+### 6.1 高优先级
 
-### 5.2 中优先级
+1. **测试验证** - 在真实环境运行 xft_advanced_login.py 验证所有新功能
+2. **Vision-based 元素定位** - 减少对 DOM 的依赖，用 VLM 理解页面视觉布局
+3. **AI 驱动的自愈选择器** - 元素变更时自动找到等效元素
 
-4. **Vision-based 元素定位** - 减少对 DOM 结构的依赖，用 VLM 理解页面视觉布局
-5. **PDF/文本提取** - 当前截图为主，缺少结构化文本提取能力
-6. **持久化浏览器 profile** - 保存完整的用户目录（cookies, localStorage, IndexedDB, cache），而非仅 JSON 导出
+### 6.2 中优先级
 
-### 5.3 长期
+4. **行为级反检测增强** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
+5. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案
+6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入
 
-7. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案
-8. **行为级反检测** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
-9. **AI 驱动的自愈选择器** - 元素变更时自动找到等效元素
+### 6.3 长期
+
+7. **多模态理解** - 结合截图 + DOM + OCR 进行联合推理
+8. **自动重试与恢复** - 智能检测失败原因并自动调整策略重试
