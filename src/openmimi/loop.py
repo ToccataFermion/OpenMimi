@@ -94,7 +94,14 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  screenX = window.screenX + (window.outerWidth - window.innerWidth) / 2 + rect.left "
     "  and screenY = window.screenY + window.outerHeight - window.innerHeight "
     "  - (window.outerWidth - window.innerWidth) / 2 + rect.top. "
-    "  Then use computer.mouse_drag with steps=80 delay_ms=25 and those exact screen coordinates."
+    "  Then use computer.mouse_drag with steps=80 delay_ms=25 and those exact screen coordinates.\n"
+    "- CAPTCHA visual analysis: the screenshot shows the full desktop. Locate the CAPTCHA "
+    "  modal (usually centered). The puzzle piece starts on the left side of the background "
+    "  image. The gap is a missing rectangular piece somewhere in the background image. "
+    "  Visually estimate the horizontal pixel distance from the puzzle piece's starting "
+    "  position to the gap's left edge. Add this offset to the handle's start screenX to "
+    "  get the drag end_x. The drag must be horizontal (same y coordinate). If unsure, "
+    "  make a conservative estimate and verify with a screenshot after the drag."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
