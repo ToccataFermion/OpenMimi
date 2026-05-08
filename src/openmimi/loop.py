@@ -137,7 +137,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- agent_browser save_session / load_session: persist and restore cookies/storage to avoid repeated logins.\n"
     "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
     "- computer clipboard: read from or write to the system clipboard.\n"
-    "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome')."
+    "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome').\n"
+    "- computer file: read from or write to files on disk (file_action='read'/'write', file_path, file_content)."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000

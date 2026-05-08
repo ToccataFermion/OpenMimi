@@ -48,7 +48,8 @@ _TOOL_DESCRIPTION = (
     "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)\n"
     "- list_windows: enumerate all visible windows with titles and positions\n"
     "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard\n"
-    "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias"
+    "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
+    "- file file_action=read|write file_path [file_content]: read from or write to a file on disk"
 )
 
 # Windows input constants
@@ -268,6 +269,7 @@ class ComputerTool(ToolBase):
                             "list_windows",
                             "clipboard",
                             "launch",
+                            "file",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -351,6 +353,19 @@ class ComputerTool(ToolBase):
                         "type": "integer",
                         "description": "Milliseconds to wait after launching (action='launch', default 2000).",
                     },
+                    "file_action": {
+                        "type": "string",
+                        "enum": ["read", "write"],
+                        "description": "File operation for action='file' (read or write).",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file for action='file'.",
+                    },
+                    "file_content": {
+                        "type": "string",
+                        "description": "Content to write for action='file' with file_action='write'.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -383,6 +398,7 @@ class ComputerTool(ToolBase):
             "list_windows": self._do_list_windows,
             "clipboard": self._do_clipboard,
             "launch": self._do_launch,
+            "file": self._do_file,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -812,6 +828,36 @@ class ComputerTool(ToolBase):
             return ToolResult(output=f"Launched: {' '.join(cmd_list)}")
         except Exception as exc:
             return ToolResult(output=f"Launch failed: {exc}", is_error=True)
+
+    async def _do_file(self, inp: dict[str, Any]) -> ToolResult:
+        """Read from or write to a file on disk."""
+        file_action = inp.get("file_action", "read")
+        file_path = str(inp.get("file_path", ""))
+        if not file_path:
+            return ToolResult(output="file requires 'file_path'", is_error=True)
+        try:
+            if file_action == "read":
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                # Truncate very large files
+                if len(content) > 8000:
+                    content = content[:8000] + "\n... [truncated]"
+                return ToolResult(
+                    output=f"File: {file_path}\n```\n{content}\n```",
+                    details={"path": file_path, "size": len(content)},
+                )
+            elif file_action == "write":
+                file_content = str(inp.get("file_content", ""))
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(file_content)
+                return ToolResult(
+                    output=f"Wrote {len(file_content)} bytes to {file_path}",
+                    details={"path": file_path, "bytes_written": len(file_content)},
+                )
+            else:
+                return ToolResult(output=f"Unknown file_action: {file_action}", is_error=True)
+        except Exception as exc:
+            return ToolResult(output=f"File operation failed: {exc}", is_error=True)
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)
