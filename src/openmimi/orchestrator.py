@@ -21,7 +21,18 @@ from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
 from .skills import format_skill_for_prompt
-from .tools import AgentBrowserTool, CodeTool, ComputerTool, FileTool, ShellTool, ToolCollection
+from .tools import (
+    AgentBrowserTool,
+    BrowserAdvancedTool,
+    BrowserExtractTool,
+    BrowserInteractTool,
+    BrowserNavigateTool,
+    CodeTool,
+    ComputerTool,
+    FileTool,
+    ShellTool,
+    ToolCollection,
+)
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
@@ -144,15 +155,19 @@ class Orchestrator:
             browser_args = [a.strip() for a in extra_args.split(",") if a.strip()]
         slow_mo_raw = os.environ.get("OPENMIMI_BROWSER_SLOW_MO_MS", "")
         slow_mo_ms = int(slow_mo_raw) if slow_mo_raw.strip().lstrip("-").isdigit() else 0
-        tools.register(
-            AgentBrowserTool(
-                download_dir=str(cfg.browser.download_dir),
-                viewport=(cfg.browser.viewport_width, cfg.browser.viewport_height),
-                headless=False,
-                browser_args=browser_args,
-                slow_mo_ms=slow_mo_ms,
-            )
+        browser_engine = AgentBrowserTool(
+            download_dir=str(cfg.browser.download_dir),
+            viewport=(cfg.browser.viewport_width, cfg.browser.viewport_height),
+            headless=False,
+            browser_args=browser_args,
+            slow_mo_ms=slow_mo_ms,
         )
+        # Register focused facade tools instead of the single god tool
+        # to reduce per-request LLM context/token usage.
+        tools.register(BrowserNavigateTool(browser_engine))
+        tools.register(BrowserInteractTool(browser_engine))
+        tools.register(BrowserExtractTool(browser_engine))
+        tools.register(BrowserAdvancedTool(browser_engine))
         tools.register(ComputerTool(screen_dir=str(cfg.storage.screen_dir)))
         tools.register(ShellTool())
         tools.register(FileTool())

@@ -4,6 +4,10 @@ from __future__ import annotations
 from .base import ToolBase
 from .agent_browser import AgentBrowserTool
 from .browser import BrowserTool
+from .browser_advanced import BrowserAdvancedTool
+from .browser_extract import BrowserExtractTool
+from .browser_interact import BrowserInteractTool
+from .browser_navigate import BrowserNavigateTool
 from .code import CodeTool
 from .computer import ComputerTool
 from .file_tool import FileTool
@@ -33,6 +37,10 @@ from .result import ToolResult
 
 __all__ = [
     "AgentBrowserTool",
+    "BrowserAdvancedTool",
+    "BrowserExtractTool",
+    "BrowserInteractTool",
+    "BrowserNavigateTool",
     "CodeTool",
     "ComputerTool",
     "FileTool",
