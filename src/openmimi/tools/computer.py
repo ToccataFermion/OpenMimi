@@ -12,6 +12,7 @@ Uses mss for screen capture and SendInput via ctypes for injection.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import ctypes
 import ctypes.wintypes
@@ -54,6 +55,8 @@ _TOOL_DESCRIPTION = (
     "- get_screen_info: return primary monitor resolution and DPI.\n"
     "- ocr [x y width height] [language=chi_sim+eng]: extract text from a screen region using Tesseract OCR. "
     "  If no region is specified, OCR the full screenshot. Useful for reading native app UI or notifications.\n"
+    "- click_text target_text [button=left|right] [language=chi_sim+eng]: find text on screen via OCR and click it. "
+    "  Useful for interacting with native apps where you cannot use coordinates.\n"
     "- window_manage title window_action [x y width height]: manage windows by title substring. "
     "  Actions: move, resize, minimize, maximize, restore, close.\n"
     "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
@@ -280,6 +283,7 @@ class ComputerTool(ToolBase):
                             "file",
                             "get_screen_info",
                             "ocr",
+                            "click_text",
                             "window_manage",
                             "shell",
                         ],
@@ -390,6 +394,10 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Tesseract language code(s) for action='ocr' (default: chi_sim+eng).",
                     },
+                    "target_text": {
+                        "type": "string",
+                        "description": "Text to find on screen and click for action='click_text'.",
+                    },
                     "window_action": {
                         "type": "string",
                         "enum": ["move", "resize", "minimize", "maximize", "restore", "close"],
@@ -430,6 +438,7 @@ class ComputerTool(ToolBase):
             "file": self._do_file,
             "get_screen_info": self._do_get_screen_info,
             "ocr": self._do_ocr,
+            "click_text": self._do_click_text,
             "window_manage": self._do_window_manage,
             "shell": self._do_shell,
         }
@@ -1070,6 +1079,83 @@ class ComputerTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"OCR failed: {exc}", is_error=True)
+
+    async def _do_click_text(self, inp: dict[str, Any]) -> ToolResult:
+        """Find text on screen via OCR and click on it."""
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as exc:
+            return ToolResult(
+                output="click_text requires pytesseract and Pillow. Install with: pip install pytesseract Pillow",
+                is_error=True,
+            )
+
+        target = str(inp.get("target_text", "")).strip()
+        if not target:
+            return ToolResult(output="click_text requires 'target_text'", is_error=True)
+
+        language = str(inp.get("language", "chi_sim+eng"))
+        button = str(inp.get("button", "left"))
+
+        try:
+            sct = self._ensure_mss()
+            monitor = sct.monitors[1]
+            raw = sct.grab(monitor)
+            import mss.tools
+            png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+            img = Image.open(io.BytesIO(png_bytes))
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+
+            data = pytesseract.image_to_data(img, lang=language, output_type=pytesseract.Output.DICT)
+            best_match = None
+            best_score = -1
+            target_lower = target.lower()
+            n_boxes = len(data["text"])
+            for i in range(n_boxes):
+                text = str(data["text"][i]).strip()
+                if not text:
+                    continue
+                text_lower = text.lower()
+                # Prefer exact match, then substring, then partial word
+                if text_lower == target_lower:
+                    score = 3
+                elif target_lower in text_lower:
+                    score = 2
+                elif any(part in text_lower for part in target_lower.split()):
+                    score = 1
+                else:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    x = int(data["left"][i])
+                    y = int(data["top"][i])
+                    w = int(data["width"][i])
+                    h = int(data["height"][i])
+                    best_match = (x + w // 2, y + h // 2, text)
+
+            if best_match is None:
+                image = await self._take_screenshot()
+                return ToolResult(
+                    output=f"click_text: could not find '{target}' on screen",
+                    is_error=True,
+                    base64_image=image,
+                )
+
+            cx, cy, matched_text = best_match
+            self._send_mouse_move(cx, cy)
+            await asyncio.sleep(0.05)
+            self._send_mouse_click(button)
+            await asyncio.sleep(0.1)
+            image = await self._take_screenshot()
+            return ToolResult(
+                output=f"Clicked on text '{matched_text}' at ({cx}, {cy}) with {button} button",
+                base64_image=image,
+                details={"matched_text": matched_text, "x": cx, "y": cy},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"click_text failed: {exc}", is_error=True)
 
     async def _do_window_manage(self, inp: dict[str, Any]) -> ToolResult:
         """Manage windows: move, resize, minimize, maximize, restore, close."""

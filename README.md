@@ -111,6 +111,7 @@ python scripts/xft_advanced_login.py
 | `list_windows` | Enumerate visible windows |
 | `locate` | OpenCV template matching on screen |
 | `ocr` | Tesseract OCR for text extraction (chi_sim+eng supported) |
+| `click_text` | Find text on screen via OCR and click it |
 | `clipboard` | Read/write system clipboard |
 | `launch` | Start applications by name or path |
 | `file` | Read/write files on disk |

@@ -162,6 +162,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- computer get_screen_info: return primary monitor resolution and DPI.\n"
     "- computer ocr [x y width height] [language=chi_sim+eng]: extract text from screen region using Tesseract OCR.\n"
     "  Useful for reading native app UI, notifications, or image-based text.\n"
+    "- computer click_text target_text [button=left|right]: find text on screen via OCR and click it.\n"
+    "  Useful for interacting with native apps when coordinates are unknown.\n"
     "- computer window_manage title window_action: move, resize, minimize, maximize, restore, or close windows.\n"
     "- computer shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )

@@ -113,6 +113,7 @@ DL 解法流程：
 | `shell` | 执行 shell 命令（带超时） |
 | `focus_window` 增强 | 返回窗口 rect (left, top, width, height) |
 | `ocr` | Tesseract OCR 提取屏幕区域文字（支持 chi_sim+eng） |
+| `click_text` | OCR 识别屏幕文字并自动点击（无需坐标） |
 | `window_manage` | 窗口管理：move, resize, minimize, maximize, restore, close |
 | `type` 增强 | 自动检测 Unicode/中文，无 VK 映射时改用剪贴板粘贴 |
 
