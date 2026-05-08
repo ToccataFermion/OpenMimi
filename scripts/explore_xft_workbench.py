@@ -61,32 +61,24 @@ async def fill_credentials(browser: AgentBrowserTool) -> bool:
     if not phone_num or not password:
         log("ERROR: XFT_PHONE and XFT_PASSWORD environment variables must be set")
         return False
-    result = await browser({
-        "action": "eval",
-        "js": f"""
-            (() => {{
-                const inputs = Array.from(document.querySelectorAll('input.ant-input'));
-                const phone = inputs.find(el => el.type === 'text');
-                const pass = inputs.find(el => el.type === 'password');
-                const checkbox = document.querySelector('input.ant-checkbox-input');
-                function setReactValue(element, value) {{
-                    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    valueSetter.call(element, value);
-                    element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-                const phoneNum = '{phone_num}';
-                const password = '{password}';
-                if (phone) setReactValue(phone, phoneNum);
-                if (pass) setReactValue(pass, password);
-                if (checkbox && !checkbox.checked) checkbox.click();
-                return {{hasPhone: !!phone, hasPass: !!pass, hasCheckbox: !!checkbox}};
-            }})()
-        """,
+    phone_result = await browser({
+        "action": "react_fill",
+        "ref": "@input.ant-input[type='text']",
+        "value": phone_num,
     })
-    data = json.loads(result.output or "{}")
-    log(f"Form fill: {json.dumps(data)}")
-    return data.get("hasPhone", False) and data.get("hasPass", False)
+    pass_result = await browser({
+        "action": "react_fill",
+        "ref": "@input.ant-input[type='password']",
+        "value": password,
+    })
+    checkbox_result = await browser({
+        "action": "eval",
+        "js": "(() => { const cb = document.querySelector('input.ant-checkbox-input'); if (cb && !cb.checked) cb.click(); return {checked: !!cb && cb.checked}; })()",
+    })
+    has_phone = not phone_result.is_error
+    has_pass = not pass_result.is_error
+    log(f"Form fill: phone={has_phone}, pass={has_pass}, checkbox={checkbox_result.output}")
+    return has_phone and has_pass
 
 
 async def submit_login(browser: AgentBrowserTool) -> bool:
@@ -270,20 +262,18 @@ async def capture_auth_state(browser: AgentBrowserTool, download_dir: str) -> No
         f.write(result.output or "{}")
     log(f"localStorage saved to {ls_path}")
 
+    url_result = await browser({"action": "get_url"})
+    title_result = await browser({"action": "get_title"})
     result = await browser({
         "action": "eval",
-        "js": """
-            (() => ({
-                url: window.location.href,
-                title: document.title,
-                userAgent: navigator.userAgent,
-                token: localStorage.getItem('token') || localStorage.getItem('accessToken') || sessionStorage.getItem('token') || null,
-            }))()
-        """,
+        "js": "(() => ({userAgent: navigator.userAgent, token: localStorage.getItem('token') || localStorage.getItem('accessToken') || sessionStorage.getItem('token') || null}))()",
     })
+    auth_data = json.loads(result.output or "{}")
+    auth_data["url"] = url_result.output
+    auth_data["title"] = title_result.output
     state_path = os.path.join(download_dir, "auth_state.json")
     with open(state_path, "w", encoding="utf-8") as f:
-        f.write(result.output or "{}")
+        json.dump(auth_data, f, ensure_ascii=False, indent=2)
     log(f"Auth state saved to {state_path}")
 
 
@@ -353,12 +343,9 @@ async def explore_workbench(browser: AgentBrowserTool, download_dir: str) -> Non
                 "action": "screenshot",
                 "path": os.path.join(download_dir, f"workbench_{explored:02d}_{text.replace(' ', '_').replace('/', '_')[:20]}.png"),
             })
-            result = await browser({
-                "action": "eval",
-                "js": "(() => ({url: window.location.href, title: document.title}))()",
-            })
-            info = json.loads(result.output or "{}")
-            log(f"  -> {info.get('title')} | {info.get('url')}")
+            url_r = await browser({"action": "get_url"})
+            title_r = await browser({"action": "get_title"})
+            log(f"  -> {title_r.output} | {url_r.output}")
             explored += 1
         except Exception as exc:
             log(f"  ERROR clicking {text}: {exc}")
@@ -404,24 +391,15 @@ async def main() -> None:
         else:
             log("=== No CAPTCHA - may be logged in ===")
 
+        url_r = await browser({"action": "get_url"})
+        title_r = await browser({"action": "get_title"})
         result = await browser({
             "action": "eval",
-            "js": """
-                (() => {
-                    const avatar = document.querySelector('.avatar, .user-avatar, [class*="avatar"], [class*="Avatar"]');
-                    const userName = document.querySelector('.user-name, [class*="userName"], [class*="user-name"]');
-                    const logout = document.querySelector('.logout, [class*="logout"], [class*="Logout"]');
-                    return {
-                        url: window.location.href,
-                        title: document.title,
-                        hasAvatar: !!avatar,
-                        hasUserName: !!userName,
-                        hasLogout: !!logout,
-                    };
-                })()
-            """,
+            "js": "(() => ({hasAvatar: !!document.querySelector('.avatar, .user-avatar, [class*=\\\"avatar\\\"], [class*=\\\"Avatar\\\"]'), hasUserName: !!document.querySelector('.user-name, [class*=\\\"userName\\\"], [class*=\\\"user-name\\\"]'), hasLogout: !!document.querySelector('.logout, [class*=\\\"logout\\\"], [class*=\\\"Logout\\\"]')}))()",
         })
         state = json.loads(result.output or "{}")
+        state["url"] = url_r.output
+        state["title"] = title_r.output
         log(f"Login state: {json.dumps(state, ensure_ascii=False)}")
 
         if state.get("hasAvatar") or state.get("hasUserName") or state.get("hasLogout"):
