@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import ctypes.wintypes
 import io
 import json
 import os
@@ -36,8 +37,11 @@ _TOOL_DESCRIPTION = (
     "- mouse_up [button=left|right]: release mouse button at current position\n"
     "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20]: drag with bezier smoothing\n"
     "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
+    "- mouse_double_click [x y] [button=left|right]: double-click at coordinates or current position\n"
+    "- cursor_position: return current mouse cursor screen coordinates\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
-    "- type text: type a string"
+    "- type text: type a string\n"
+    "- wait milliseconds=1000: pause briefly for UI to settle"
 )
 
 # Windows input constants
@@ -197,8 +201,11 @@ class ComputerTool(ToolBase):
                             "mouse_up",
                             "mouse_drag",
                             "mouse_scroll",
+                            "mouse_double_click",
+                            "cursor_position",
                             "key_press",
                             "type",
+                            "wait",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -239,6 +246,10 @@ class ComputerTool(ToolBase):
                         "type": "integer",
                         "description": "Number of intermediate points for drag smoothing (default 20).",
                     },
+                    "milliseconds": {
+                        "type": "integer",
+                        "description": "Wait time in milliseconds (default 1000).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -260,8 +271,11 @@ class ComputerTool(ToolBase):
             "mouse_up": self._do_mouse_up,
             "mouse_drag": self._do_mouse_drag,
             "mouse_scroll": self._do_mouse_scroll,
+            "mouse_double_click": self._do_mouse_double_click,
+            "cursor_position": self._do_cursor_position,
             "key_press": self._do_key_press,
             "type": self._do_type,
+            "wait": self._do_wait,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -382,6 +396,39 @@ class ComputerTool(ToolBase):
         # Mouse up
         await self._do_mouse_up({"button": button})
         return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
+
+    async def _do_mouse_double_click(self, inp: dict[str, Any]) -> ToolResult:
+        x = inp.get("x")
+        y = inp.get("y")
+        button = inp.get("button", "left")
+        if x is not None and y is not None:
+            await self._do_mouse_move({"x": x, "y": y})
+            time.sleep(0.05)
+        down_flag, up_flag = {
+            "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+            "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+            "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+        }.get(button, (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+        # First click
+        self._send_mouse_event(down_flag)
+        time.sleep(0.05)
+        self._send_mouse_event(up_flag)
+        time.sleep(0.1)
+        # Second click
+        self._send_mouse_event(down_flag)
+        time.sleep(0.05)
+        self._send_mouse_event(up_flag)
+        return ToolResult(output=f"Mouse {button} double-clicked")
+
+    async def _do_cursor_position(self, _inp: dict[str, Any]) -> ToolResult:
+        point = ctypes.wintypes.POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+        return ToolResult(output=f"Cursor at ({point.x}, {point.y})")
+
+    async def _do_wait(self, inp: dict[str, Any]) -> ToolResult:
+        ms = max(0, int(inp.get("milliseconds", 1000)))
+        time.sleep(ms / 1000.0)
+        return ToolResult(output=f"Waited {ms}ms")
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)
