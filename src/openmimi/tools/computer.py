@@ -229,9 +229,10 @@ class ComputerTool(ToolBase):
 
     name = "computer"
 
-    def __init__(self, screen_dir: str | None = None) -> None:
+    def __init__(self, screen_dir: str | None = None, screenshot_scale: float = 1.0) -> None:
         self._screen_dir = screen_dir or os.path.join("data", "screens")
         os.makedirs(self._screen_dir, exist_ok=True)
+        self._screenshot_scale = max(0.1, min(1.0, float(screenshot_scale)))
         self._mss = None
 
     def _ensure_mss(self) -> Any:
@@ -448,6 +449,23 @@ class ComputerTool(ToolBase):
         raw = sct.grab(sct.monitors[1])
         import mss.tools
         png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+
+        # Optionally scale down to save LLM tokens
+        if self._screenshot_scale < 1.0:
+            try:
+                from PIL import Image
+                img = Image.open(io.BytesIO(png_bytes))
+                new_size = (
+                    max(1, int(img.width * self._screenshot_scale)),
+                    max(1, int(img.height * self._screenshot_scale)),
+                )
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                png_bytes = buf.getvalue()
+            except Exception:
+                pass  # Fall back to original if PIL fails
+
         b64 = base64.b64encode(png_bytes).decode("ascii")
         path = os.path.join(
             self._screen_dir, f"screen_{int(time.time() * 1000)}.png"

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
 import shutil
@@ -285,8 +286,10 @@ class AgentBrowserTool(ToolBase):
         stealth: bool = True,
         proxy: str | None = None,
         user_data_dir: str | None = None,
+        screenshot_scale: float = 1.0,
     ) -> None:
         self._download_dir = Path(download_dir)
+        self._screenshot_scale = max(0.1, min(1.0, float(screenshot_scale)))
         self._viewport = viewport
         self._headless = headless
         self._stealth = stealth
@@ -2390,7 +2393,23 @@ class AgentBrowserTool(ToolBase):
             returned_path = data.get("path", str(path))
             if Path(returned_path).exists():
                 with open(returned_path, "rb") as f:
-                    return base64.b64encode(f.read()).decode("ascii")
+                    png_bytes = f.read()
+                # Optionally scale down to save LLM tokens
+                if self._screenshot_scale < 1.0:
+                    try:
+                        from PIL import Image
+                        img = Image.open(io.BytesIO(png_bytes))
+                        new_size = (
+                            max(1, int(img.width * self._screenshot_scale)),
+                            max(1, int(img.height * self._screenshot_scale)),
+                        )
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG", optimize=True)
+                        png_bytes = buf.getvalue()
+                    except Exception:
+                        pass
+                return base64.b64encode(png_bytes).decode("ascii")
         except Exception:
             pass
         return None
