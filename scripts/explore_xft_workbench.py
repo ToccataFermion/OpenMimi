@@ -1,4 +1,8 @@
-"""Login to xft using proven comprehensive flow, then explore workbench."""
+"""xft.cmbchina.com workbench exploration after successful login.
+
+Logs in using the proven DL CAPTCHA solver, then systematically explores
+all workbench features by clicking navigation items and capturing screenshots.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +15,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from openmimi.tools.agent_browser import AgentBrowserTool
 from openmimi.tools.computer import ComputerTool
+
+
+# Fix Windows console UTF-8 output so Chinese text renders correctly
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
 def log(msg: str) -> None:
@@ -117,69 +128,71 @@ async def get_handle_position(browser: AgentBrowserTool) -> tuple[int, int] | No
     return sx, sy
 
 
-async def get_gap_pixeldiff(browser: AgentBrowserTool) -> int | None:
-    log("Trying pixeldiff gap detection...")
+async def get_gap_dl(browser: AgentBrowserTool, download_dir: str) -> int | None:
+    try:
+        from captcha_recognizer.slider import Slider
+    except ImportError:
+        log("captcha-recognizer not installed")
+        return None
+
+    log("Taking CAPTCHA screenshot for DL analysis...")
+    screenshot_path = os.path.join(download_dir, "captcha_screenshot.png")
+    result = await browser({"action": "screenshot", "path": screenshot_path})
+
+    if not os.path.exists(screenshot_path):
+        log("Screenshot not saved")
+        return None
+
     result = await browser({
         "action": "eval",
         "js": """
             (() => {
-                const bg = document.querySelector('.bottomImage');
-                const piece = document.querySelector('.dragImage');
-                if (!bg || !piece) return {error: 'missing images'};
-
-                // Wait for images to be fully loaded
-                let attempts = 0;
-                while (attempts < 30) {
-                    const bgReady = bg.complete && (bg.naturalWidth || bg.width) > 0;
-                    const pieceReady = piece.complete && (piece.naturalWidth || piece.width) > 0;
-                    if (bgReady && pieceReady) break;
-                    attempts++;
-                }
-                if (attempts >= 30) return {error: 'images not loaded'};
-
-                const bgW = bg.naturalWidth || bg.width || 340;
-                const bgH = bg.naturalHeight || bg.height || 278;
-                const pW = piece.naturalWidth || piece.width || 78;
-                const pH = piece.naturalHeight || piece.height || 278;
-
-                const bgCanvas = document.createElement('canvas');
-                bgCanvas.width = bgW; bgCanvas.height = bgH;
-                bgCanvas.getContext('2d').drawImage(bg, 0, 0);
-                const bgData = bgCanvas.getContext('2d').getImageData(0, 0, bgW, bgH).data;
-
-                const pCanvas = document.createElement('canvas');
-                pCanvas.width = pW; pCanvas.height = pH;
-                pCanvas.getContext('2d').drawImage(piece, 0, 0);
-                const pData = pCanvas.getContext('2d').getImageData(0, 0, pW, pH).data;
-
-                const maxOffset = bgW - pW;
-                let bestOffset = 0, maxDiff = -1;
-                for (let ox = 0; ox <= maxOffset; ox++) {
-                    let diff = 0, count = 0;
-                    for (let py = 0; py < pH; py += 2) {
-                        for (let px = 0; px < pW; px += 2) {
-                            const pIdx = (py * pW + px) * 4;
-                            if (pData[pIdx + 3] < 128) continue;
-                            const bgIdx = (py * bgW + (ox + px)) * 4;
-                            diff += Math.abs(pData[pIdx] - bgData[bgIdx])
-                                  + Math.abs(pData[pIdx+1] - bgData[bgIdx+1])
-                                  + Math.abs(pData[pIdx+2] - bgData[bgIdx+2]);
-                            count++;
-                        }
-                    }
-                    if (count > 0) {
-                        const avgDiff = diff / count;
-                        if (avgDiff > maxDiff) { maxDiff = avgDiff; bestOffset = ox; }
-                    }
-                }
-                return {gap: bestOffset, maxDiff: Math.round(maxDiff), bgW, pW};
+                const modal = document.querySelector('.xftImageVerify, .imageVerify, [class*="imageVerify"]');
+                if (!modal) return {error: 'modal not found'};
+                const r = modal.getBoundingClientRect();
+                return {left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height)};
             })()
         """,
     })
-    data = json.loads(result.output or "{}")
-    gap = data.get("gap")
-    log(f"Pixeldiff: gap={gap}px (maxDiff={data.get('maxDiff')}, bgW={data.get('bgW')}, pW={data.get('pW')})")
-    return gap
+    modal_data = json.loads(result.output or "{}")
+    if modal_data.get("error"):
+        log(f"Modal detection: {modal_data.get('error')}")
+        crop_path = screenshot_path
+    else:
+        left = modal_data.get("left", 0)
+        top = modal_data.get("top", 0)
+        width = modal_data.get("width", 0)
+        height = modal_data.get("height", 0)
+        log(f"Modal: left={left}, top={top}, width={width}, height={height}")
+        try:
+            from PIL import Image
+            img = Image.open(screenshot_path)
+            pad = 20
+            crop_box = (
+                max(0, left - pad),
+                max(0, top - pad),
+                min(img.width, left + width + pad),
+                min(img.height, top + height + pad),
+            )
+            cropped = img.crop(crop_box)
+            crop_path = os.path.join(download_dir, "captcha_cropped.png")
+            cropped.save(crop_path)
+            log(f"Cropped CAPTCHA saved to {crop_path}")
+        except Exception as exc:
+            log(f"Crop failed: {exc}")
+            crop_path = screenshot_path
+
+    try:
+        slider = Slider()
+        offset, conf = slider.identify_offset(crop_path)
+        log(f"DL gap detection: offset={offset}px, confidence={conf:.3f}")
+        if conf < 0.5:
+            log("Confidence too low, skipping DL result")
+            return None
+        return int(offset)
+    except Exception as exc:
+        log(f"DL detection failed: {exc}")
+        return None
 
 
 async def try_drag(browser: AgentBrowserTool, computer: ComputerTool, sx: int, sy: int, distance: int) -> bool:
@@ -203,22 +216,21 @@ async def try_drag(browser: AgentBrowserTool, computer: ComputerTool, sx: int, s
     return solved
 
 
-async def solve_captcha(browser: AgentBrowserTool, computer: ComputerTool) -> bool:
+async def solve_captcha(browser: AgentBrowserTool, computer: ComputerTool, download_dir: str) -> bool:
     sx, sy = await get_handle_position(browser)
     if sx is None or sy is None:
         return False
 
-    gap = await get_gap_pixeldiff(browser)
+    gap = await get_gap_dl(browser, download_dir)
     if gap is not None and gap > 10:
         handle_drag = int(gap * 280 / 262)
-        log(f"Pixeldiff suggests handle_drag={handle_drag}px")
+        log(f"DL suggests handle_drag={handle_drag}px")
         for offset in [0, 10, -10, 20, -20]:
             if await try_drag(browser, computer, sx, sy, handle_drag + offset):
-                log("SUCCESS!")
+                log("SUCCESS with DL!")
                 return True
             await asyncio.sleep(1.0)
 
-    # Brute force fallback
     log("Brute force fallback...")
     for dist in range(80, 261, 15):
         if await try_drag(browser, computer, sx, sy, dist):
@@ -229,76 +241,123 @@ async def solve_captcha(browser: AgentBrowserTool, computer: ComputerTool) -> bo
     return False
 
 
+async def capture_auth_state(browser: AgentBrowserTool, download_dir: str) -> None:
+    log("\n=== Capturing Auth State ===")
+    result = await browser({
+        "action": "storage",
+        "storage_action": "get",
+        "storage_type": "cookies",
+    })
+    cookies_path = os.path.join(download_dir, "auth_cookies.json")
+    with open(cookies_path, "w", encoding="utf-8") as f:
+        f.write(result.output or "{}")
+    log(f"Cookies saved to {cookies_path}")
+
+    result = await browser({
+        "action": "storage",
+        "storage_action": "get",
+        "storage_type": "localStorage",
+    })
+    ls_path = os.path.join(download_dir, "auth_localStorage.json")
+    with open(ls_path, "w", encoding="utf-8") as f:
+        f.write(result.output or "{}")
+    log(f"localStorage saved to {ls_path}")
+
+    result = await browser({
+        "action": "eval",
+        "js": """
+            (() => ({
+                url: window.location.href,
+                title: document.title,
+                userAgent: navigator.userAgent,
+                token: localStorage.getItem('token') || localStorage.getItem('accessToken') || sessionStorage.getItem('token') || null,
+            }))()
+        """,
+    })
+    state_path = os.path.join(download_dir, "auth_state.json")
+    with open(state_path, "w", encoding="utf-8") as f:
+        f.write(result.output or "{}")
+    log(f"Auth state saved to {state_path}")
+
+
 async def explore_workbench(browser: AgentBrowserTool, download_dir: str) -> None:
     log("\n=== Exploring Workbench ===")
-    await browser({"action": "screenshot", "path": os.path.join(download_dir, "workbench_01_initial.png")})
 
-    # Discover navigation items
+    await browser({"action": "screenshot", "path": os.path.join(download_dir, "workbench_overview.png"), "annotate": True})
+
     result = await browser({
         "action": "eval",
         "js": """
             (() => {
-                const links = Array.from(document.querySelectorAll('a, button, [role="button"], .nav-item, .menu-item, [class*="menu"], [class*="nav"]'));
-                return links.slice(0, 40).map(el => ({
-                    tag: el.tagName,
-                    text: (el.innerText || el.textContent || '').trim().substring(0, 40),
-                    className: el.className,
-                    href: el.href || null,
-                }));
+                const items = [];
+                const selectors = [
+                    '.ant-menu-item',
+                    '.ant-menu-submenu-title',
+                    '.ant-layout-sider a',
+                    '.ant-layout-header a',
+                    '.nav-item',
+                    '.menu-item',
+                    '[class*="menu"] > li',
+                    '[class*="nav"] > a',
+                    '[class*="nav"] > li',
+                    '.sidebar a',
+                    '.sider a',
+                ];
+                for (const sel of selectors) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        if (text && text.length > 0 && text.length < 50) {
+                            const rect = el.getBoundingClientRect();
+                            items.push({
+                                selector: sel,
+                                text: text.substring(0, 40),
+                                tag: el.tagName,
+                                className: el.className,
+                                href: el.href || null,
+                                x: Math.round(rect.left + rect.width/2),
+                                y: Math.round(rect.top + rect.height/2),
+                            });
+                        }
+                    }
+                }
+                const seen = new Set();
+                return items.filter(i => { if (seen.has(i.text)) return false; seen.add(i.text); return true; });
             })()
         """,
     })
     nav_items = json.loads(result.output or "[]")
-    log(f"Navigation items ({len(nav_items)}):")
+    log(f"Found {len(nav_items)} unique navigation items")
     for i, item in enumerate(nav_items):
-        log(f"  [{i}] {item.get('tag')} | {item.get('text')} | {item.get('className', '')[:50]}")
+        log(f"  [{i}] {item.get('text')} ({item.get('selector')})")
 
-    # Try clicking common workbench keywords
-    for keyword in ["工作台", "首页", "我的", "Dashboard", "Workbench"]:
-        result = await browser({
-            "action": "eval",
-            "js": f"""
-                (() => {{
-                    const el = Array.from(document.querySelectorAll('a, button, div, span, li')).find(
-                        e => (e.innerText || e.textContent || '').trim().includes('{keyword}')
-                    );
-                    if (el) {{
-                        el.click();
-                        return {{clicked: true, text: (el.innerText || '').trim().substring(0, 40)}};
-                    }}
-                    return {{clicked: false}};
-                }})()
-            """,
-        })
-        data = json.loads(result.output or "{}")
-        if data.get("clicked"):
-            log(f"Clicked '{keyword}': {data.get('text')}")
-            await asyncio.sleep(3.0)
-            await browser({"action": "screenshot", "path": os.path.join(download_dir, f"workbench_02_{keyword}.png")})
-            break
+    log("\n=== Starting Network Log Capture ===")
+    await browser({"action": "network_log", "duration_ms": 3000, "filter": "cmbchina"})
 
-    # Check for data tables, cards, lists
-    result = await browser({
-        "action": "eval",
-        "js": """
-            (() => {
-                const tables = document.querySelectorAll('table');
-                const cards = document.querySelectorAll('.card, [class*="card"], [class*="Card"]');
-                const lists = document.querySelectorAll('.list, [class*="list"], [class*="List"]');
-                return {
-                    tableCount: tables.length,
-                    cardCount: cards.length,
-                    listCount: lists.length,
-                    tableHeaders: Array.from(tables).slice(0, 3).map(t => Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim())),
-                };
-            })()
-        """,
-    })
-    data = json.loads(result.output or "{}")
-    log(f"Page structure: {json.dumps(data, ensure_ascii=False)}")
+    explored = 0
+    for item in nav_items[:8]:
+        text = item.get("text", "")
+        if not text or text in ("登录", "注册", "退出", "登出"):
+            continue
+        log(f"\n--- Clicking: {text} ---")
+        try:
+            await browser({"action": "click", "target_text": text})
+            await asyncio.sleep(2.5)
+            await browser({
+                "action": "screenshot",
+                "path": os.path.join(download_dir, f"workbench_{explored:02d}_{text.replace(' ', '_').replace('/', '_')[:20]}.png"),
+            })
+            result = await browser({
+                "action": "eval",
+                "js": "(() => ({url: window.location.href, title: document.title}))()",
+            })
+            info = json.loads(result.output or "{}")
+            log(f"  -> {info.get('title')} | {info.get('url')}")
+            explored += 1
+        except Exception as exc:
+            log(f"  ERROR clicking {text}: {exc}")
 
-    await browser({"action": "screenshot", "path": os.path.join(download_dir, "workbench_99_final.png")})
-    log(f"Screenshots saved to {download_dir}")
+    await browser({"action": "screenshot", "path": os.path.join(download_dir, "workbench_final.png")})
+    log(f"\nExplored {explored} sections. Screenshots saved to {download_dir}")
 
 
 async def main() -> None:
@@ -330,7 +389,7 @@ async def main() -> None:
         has_captcha = await submit_login(browser)
         if has_captcha:
             log("=== Solve CAPTCHA ===")
-            if await solve_captcha(browser, computer):
+            if await solve_captcha(browser, computer, download_dir):
                 log("=== LOGIN SUCCESS ===")
             else:
                 log("=== LOGIN FAILED (CAPTCHA) ===")
@@ -338,7 +397,6 @@ async def main() -> None:
         else:
             log("=== No CAPTCHA - may be logged in ===")
 
-        # Check login state
         result = await browser({
             "action": "eval",
             "js": """
@@ -360,14 +418,16 @@ async def main() -> None:
         log(f"Login state: {json.dumps(state, ensure_ascii=False)}")
 
         if state.get("hasAvatar") or state.get("hasUserName") or state.get("hasLogout"):
+            await capture_auth_state(browser, download_dir)
             await explore_workbench(browser, download_dir)
         else:
             log("No logged-in indicators found, but continuing to explore anyway...")
+            await capture_auth_state(browser, download_dir)
             await explore_workbench(browser, download_dir)
 
     finally:
         await browser.close()
-        log("Browser closed.")
+        log(f"Browser closed. Download dir: {download_dir}")
 
 
 if __name__ == "__main__":
