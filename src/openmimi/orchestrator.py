@@ -20,10 +20,26 @@ from .llm import AnthropicClient, OpenAIChatClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
+from .skills import format_skill_for_prompt
 from .tools import AgentBrowserTool, CodeTool, ComputerTool, FileTool, ShellTool, ToolCollection
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
+
+
+def _build_system_prompt(domain: str | None) -> str:
+    """Assemble system prompt from defaults + site memory + skill files."""
+    system = _DEFAULT_SYSTEM_PROMPT
+    extras: list[str] = []
+
+    if domain:
+        skill_text = format_skill_for_prompt(domain)
+        if skill_text:
+            extras.append(skill_text)
+
+    if extras:
+        system = f"{system}\n\n" + "\n\n".join(extras)
+    return system
 
 
 class Orchestrator:
@@ -156,11 +172,7 @@ class Orchestrator:
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         domain = extract_domain(task)
 
-        system = _DEFAULT_SYSTEM_PROMPT
-        if self.memory and domain:
-            mem_text = self.memory.format_for_prompt(domain)
-            if mem_text:
-                system = f"{_DEFAULT_SYSTEM_PROMPT}\n\n{mem_text}"
+        system = _build_system_prompt(domain)
 
         try:
             await sampling_loop(
@@ -244,13 +256,8 @@ class Orchestrator:
         """
         messages.append({"role": "user", "content": user_content})
 
-        system = _DEFAULT_SYSTEM_PROMPT
-        if self.memory:
-            domain = extract_domain(user_content)
-            if domain:
-                mem_text = self.memory.format_for_prompt(domain)
-                if mem_text:
-                    system = f"{_DEFAULT_SYSTEM_PROMPT}\n\n{mem_text}"
+        domain = extract_domain(user_content)
+        system = _build_system_prompt(domain)
 
         await sampling_loop(
             messages=messages,
