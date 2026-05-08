@@ -1968,7 +1968,7 @@ class AgentBrowserTool(ToolBase):
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         if screenshots_disabled():
             return ToolResult(
-                output="Screenshots disabled (OPENMIMI_DISABLE_SCREENSHOTS).",
+                output="Screenshots disabled by default. Set OPENMIMI_ENABLE_SCREENSHOTS=1 or pass --screenshots to enable.",
                 base64_image=None,
             )
         path = inp.get("path")

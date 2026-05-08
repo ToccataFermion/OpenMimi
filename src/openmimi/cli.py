@@ -63,24 +63,24 @@ def _root_callback() -> None:
     _polish_console_io()
 
 
-def _apply_cli_no_screenshots(no_screenshots: bool) -> None:
-    """Honor ``--no-screenshots`` after ``.env`` load so the flag wins for this run."""
-    if no_screenshots:
-        os.environ["OPENMIMI_DISABLE_SCREENSHOTS"] = "1"
+def _apply_cli_screenshots(screenshots: bool) -> None:
+    """Honor ``--screenshots`` after ``.env`` load so the flag wins for this run."""
+    if screenshots:
+        os.environ["OPENMIMI_ENABLE_SCREENSHOTS"] = "1"
 
 
 @app.command()
 def run(
     task: str = typer.Argument(..., help="The task to execute, in plain English."),
-    no_screenshots: bool = typer.Option(
+    screenshots: bool = typer.Option(
         False,
-        "--no-screenshots",
-        help="Disable tool screenshots for this run (same as OPENMIMI_DISABLE_SCREENSHOTS=1).",
+        "--screenshots",
+        help="Enable tool screenshots for this run (same as OPENMIMI_ENABLE_SCREENSHOTS=1).",
     ),
 ) -> None:
     """Run a single task end-to-end."""
     _maybe_load_dotenv()
-    _apply_cli_no_screenshots(no_screenshots)
+    _apply_cli_screenshots(screenshots)
     from .orchestrator import Orchestrator
 
     try:
@@ -129,15 +129,15 @@ def _print_welcome(session_id: str) -> None:
 
 @app.command()
 def chat(
-    no_screenshots: bool = typer.Option(
+    screenshots: bool = typer.Option(
         False,
-        "--no-screenshots",
-        help="Disable tool screenshots for this run (same as OPENMIMI_DISABLE_SCREENSHOTS=1).",
+        "--screenshots",
+        help="Enable tool screenshots for this run (same as OPENMIMI_ENABLE_SCREENSHOTS=1).",
     ),
 ) -> None:
     """Multi-turn REPL with a single browser session and shared context."""
     _maybe_load_dotenv()
-    _apply_cli_no_screenshots(no_screenshots)
+    _apply_cli_screenshots(screenshots)
     from .orchestrator import Orchestrator
     from .utils.ids import new_session_id
 

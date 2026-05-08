@@ -305,7 +305,7 @@ class BrowserTool(ToolBase):
                     )
                 elif isinstance(validated, ScreenshotInput):
                     output = (
-                        "Screenshots disabled (OPENMIMI_DISABLE_SCREENSHOTS)."
+                        "Screenshots disabled by default. Set OPENMIMI_ENABLE_SCREENSHOTS=1 or pass --screenshots to enable."
                         if screenshots_disabled()
                         else "Captured screenshot."
                     )
