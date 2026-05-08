@@ -109,6 +109,46 @@ _CAPTCHA_KEYWORDS = [
     "点击验证", "智能验证", "行为验证",
 ]
 
+
+def _cdp_key_code(key: str) -> str:
+    """Map a key name to a CDP key code for Input.dispatchKeyEvent."""
+    _KEY_MAP = {
+        "control": "ControlLeft",
+        "ctrl": "ControlLeft",
+        "shift": "ShiftLeft",
+        "alt": "AltLeft",
+        "meta": "MetaLeft",
+        "enter": "Enter",
+        "return": "Enter",
+        "escape": "Escape",
+        "esc": "Escape",
+        "tab": "Tab",
+        "space": "Space",
+        "backspace": "Backspace",
+        "delete": "Delete",
+        "arrowup": "ArrowUp",
+        "arrowdown": "ArrowDown",
+        "arrowleft": "ArrowLeft",
+        "arrowright": "ArrowRight",
+        "up": "ArrowUp",
+        "down": "ArrowDown",
+        "left": "ArrowLeft",
+        "right": "ArrowRight",
+        "home": "Home",
+        "end": "End",
+        "pageup": "PageUp",
+        "pagedown": "PageDown",
+    }
+    lower = key.lower()
+    if lower in _KEY_MAP:
+        return _KEY_MAP[lower]
+    if len(key) == 1 and key.isalpha():
+        return f"Key{key.upper()}"
+    if len(key) == 1 and key.isdigit():
+        return f"Digit{key}"
+    return key
+
+
 # JavaScript to inject after navigation when stealth mode is enabled.
 # Masks the most common automation indicators that sites check for.
 _STEALTH_JS = """
@@ -388,6 +428,7 @@ class AgentBrowserTool(ToolBase):
                             "fill",
                             "react_fill",
                             "press",
+                            "key_combo",
                             "hover",
                             "scroll",
                             "screenshot",
@@ -707,6 +748,7 @@ class AgentBrowserTool(ToolBase):
             "fill": self._do_fill,
             "react_fill": self._do_react_fill,
             "press": self._do_press,
+            "key_combo": self._do_key_combo,
             "hover": self._do_hover,
             "scroll": self._do_scroll,
             "screenshot": self._do_screenshot,
@@ -1172,6 +1214,52 @@ class AgentBrowserTool(ToolBase):
         result = await self._exec("press", key, "--json")
         image = await self._take_screenshot()
         return ToolResult(output=f"Pressed {key}", base64_image=image)
+
+    async def _do_key_combo(self, inp: dict[str, Any]) -> ToolResult:
+        """Send a key combination (e.g. ['Control','a']) via CDP dispatchKeyEvent."""
+        keys = inp.get("keys", [])
+        if not keys or not isinstance(keys, list):
+            return ToolResult(output="key_combo requires 'keys' array (e.g. ['Control','c'])", is_error=True)
+
+        # Build JS that dispatches keyDown for all keys, then keyUp in reverse
+        key_objs = []
+        for k in keys:
+            key_objs.append({"key": k, "code": _cdp_key_code(k)})
+
+        down_events = "\n".join(
+            f"    await window.__openmimi_cdp_send('Input.dispatchKeyEvent', {{type: 'keyDown', key: {json.dumps(k['key'])}, code: {json.dumps(k['code'])}}});"
+            for k in key_objs
+        )
+        up_events = "\n".join(
+            f"    await window.__openmimi_cdp_send('Input.dispatchKeyEvent', {{type: 'keyUp', key: {json.dumps(k['key'])}, code: {json.dumps(k['code'])}}});"
+            for k in reversed(key_objs)
+        )
+
+        js = f"""
+        (async () => {{
+            try {{
+                {down_events}
+                {up_events}
+                return {{ok: true, keys: {json.dumps(keys)}}};
+            }} catch (e) {{
+                return {{error: e.message}};
+            }}
+        }})()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"key_combo failed: {result_value['error']}", is_error=True)
+            image = await self._take_screenshot()
+            return ToolResult(
+                output=f"Key combo pressed: {'+'.join(keys)}",
+                base64_image=image,
+                details=result_value,
+            )
+        except Exception as exc:
+            return ToolResult(output=f"key_combo error: {exc}", is_error=True)
 
     async def _do_hover(self, inp: dict[str, Any]) -> ToolResult:
         ref = inp.get("ref")

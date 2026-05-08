@@ -81,6 +81,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  dispatchEvent(input/change) so React state picks up the new value.\n"
     "- Use action='right_click' or action='double_click' for context menus or "
     "  elements that require double-click activation.\n"
+    "- Use action='key_combo' with 'keys' array for keyboard shortcuts (e.g. ['Control','a'] to select all, "
+    "  ['Control','c'] to copy). This sends simultaneous key presses via CDP dispatchKeyEvent.\n"
     "- Use action='wait_for' with ref or target_text when SPA content loads lazily "
     "  (e.g., after clicking a tab or submitting a form). This polls until the element "
     "  appears, avoiding brittle sleep calls.\n"
