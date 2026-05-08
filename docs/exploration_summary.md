@@ -191,6 +191,7 @@ DL 解法流程：
 | `set_timezone` | CDP `Emulation.setTimezoneOverride` 覆盖浏览器时区 |
 | `set_locale` | CDP `Emulation.setLocaleOverride` 覆盖浏览器语言环境 |
 | `set_geolocation` | CDP `Emulation.setGeolocationOverride` 覆盖 GPS 定位（省略坐标则清除） |
+| `scroll_until` | 分步滚动直到元素或文本出现，适用于无限滚动页面和长表单 |
 
 ### 5.3 Bug 修复
 

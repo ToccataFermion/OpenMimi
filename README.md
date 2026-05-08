@@ -72,6 +72,7 @@ python scripts/xft_advanced_login.py
 | `get_box` | Element bounding box for OS-level mouse coordination |
 | `visual_locate` | Find element by OpenCV template matching on screenshot |
 | `scroll_into_view` | Bring element into viewport |
+| `scroll_until` | Scroll until element/text appears (infinite scroll friendly) |
 | `wait_for` | Poll until element/text appears |
 | `wait_for_navigation` | Wait for URL change after SPA navigation |
 | `wait_for_network_idle` | Wait until no active network requests for a duration |

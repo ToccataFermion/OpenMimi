@@ -68,6 +68,8 @@ _TOOL_DESCRIPTION = (
     "or when DOM selectors are unreliable.\n"
     "Human-like scroll: action='human_scroll' performs scroll in multiple small steps with "
     "random pauses between each step, simulating human reading behavior and reducing bot detection.\n"
+    "Scroll until found: action='scroll_until' scrolls in steps until an element (ref/target_text) or text appears. "
+    "Useful for infinite scroll and long forms. Parameters: direction, step_pixels, timeout_ms, interval_ms.\n"
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "wait_for_disappear: action='wait_for_disappear' with 'ref', 'target_text', or 'text' waits until "
@@ -444,6 +446,7 @@ class AgentBrowserTool(ToolBase):
                             "hover",
                             "scroll",
                             "human_scroll",
+                            "scroll_until",
                             "screenshot",
                             "extract",
                             "select",
@@ -520,6 +523,10 @@ class AgentBrowserTool(ToolBase):
                     "amount": {
                         "type": "integer",
                         "description": "Scroll amount in pixels (default 500).",
+                    },
+                    "step_pixels": {
+                        "type": "integer",
+                        "description": "Scroll step size in pixels for action='scroll_until' (default 500).",
                     },
                     "key": {
                         "type": "string",
@@ -805,6 +812,7 @@ class AgentBrowserTool(ToolBase):
             "hover": self._do_hover,
             "scroll": self._do_scroll,
             "human_scroll": self._do_human_scroll,
+            "scroll_until": self._do_scroll_until,
             "screenshot": self._do_screenshot,
             "extract": self._do_extract,
             "select": self._do_select,
@@ -1379,6 +1387,63 @@ class AgentBrowserTool(ToolBase):
         return ToolResult(
             output=f"Human-scrolled {direction} ~{amount}px in {steps} steps",
             base64_image=image,
+        )
+
+    async def _do_scroll_until(self, inp: dict[str, Any]) -> ToolResult:
+        """Scroll the page in steps until an element or text appears."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        text = inp.get("text", "")
+        direction = inp.get("direction", "down")
+        step_pixels = inp.get("step_pixels", 500)
+        timeout_ms = inp.get("timeout_ms", 10000)
+        interval_ms = inp.get("interval_ms", 500)
+        selector = ref or target_text
+
+        if not selector and not text:
+            return ToolResult(
+                output="scroll_until requires 'ref', 'target_text', or 'text'", is_error=True
+            )
+
+        direction_map = {"down": "down", "up": "up", "left": "left", "right": "right"}
+        scroll_dir = direction_map.get(direction, "down")
+        start = time.monotonic()
+        steps = 0
+
+        while (time.monotonic() - start) * 1000 < timeout_ms:
+            # Check if target is present
+            try:
+                if selector:
+                    result = await self._exec("get", "box", selector, "--json")
+                    data = self._parse_data(result.stdout)
+                    box = data.get("box") if isinstance(data, dict) else None
+                    if box:
+                        return ToolResult(
+                            output=f"Found after scrolling {steps} steps: {selector}",
+                            details={"box": box, "selector": selector, "steps": steps},
+                        )
+                if text:
+                    snapshot = await self._exec("snapshot", "--json")
+                    snap_text, _ = self._parse_snapshot(snapshot.stdout)
+                    if text in snap_text:
+                        return ToolResult(
+                            output=f"Found text after scrolling {steps} steps: {text}",
+                            details={"text": text, "steps": steps},
+                        )
+            except Exception:
+                pass
+
+            # Scroll one step
+            try:
+                await self._exec("scroll", scroll_dir, str(step_pixels), "--json")
+                steps += 1
+            except Exception:
+                pass
+            await asyncio.sleep(interval_ms / 1000.0)
+
+        return ToolResult(
+            output=f"scroll_until timed out after {timeout_ms}ms ({steps} steps): {selector or text}",
+            is_error=True,
         )
 
     async def _do_scroll_into_view(self, inp: dict[str, Any]) -> ToolResult:

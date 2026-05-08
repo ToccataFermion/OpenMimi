@@ -160,6 +160,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- agent_browser scroll_into_view: bring an element into the viewport before interacting with it.\n"
     "- agent_browser human_scroll: scroll in multiple small steps with random pauses, "
     "  simulating human reading behavior and reducing bot detection signatures.\n"
+    "- agent_browser scroll_until: scroll in steps until an element or text appears. "
+    "  Useful for infinite scroll pages and long forms.\n"
     "- agent_browser page_source: retrieve raw HTML for parsing or debugging.\n"
     "- agent_browser get_url: return the current page URL without eval.\n"
     "- agent_browser get_title: return the current page title without eval.\n"
