@@ -69,6 +69,50 @@ def _apply_cli_screenshots(screenshots: bool) -> None:
         os.environ["OPENMIMI_ENABLE_SCREENSHOTS"] = "1"
 
 
+def _screenshots_status() -> str:
+    from .utils.env_flags import screenshots_disabled
+
+    return "off" if screenshots_disabled() else "on"
+
+
+def _handle_slash_command(line: str, messages: list[dict[str, Any]]) -> bool:
+    """Process slash commands. Return True if the line was handled."""
+    parts = line.split()
+    cmd = parts[0].lower() if parts else ""
+
+    if cmd == "/screenshots":
+        if len(parts) >= 2:
+            arg = parts[1].lower()
+            if arg in ("on", "1", "true", "yes"):
+                os.environ["OPENMIMI_ENABLE_SCREENSHOTS"] = "1"
+                print("Screenshots enabled.")
+            elif arg in ("off", "0", "false", "no"):
+                os.environ.pop("OPENMIMI_ENABLE_SCREENSHOTS", None)
+                print("Screenshots disabled.")
+            else:
+                print(f"Usage: /screenshots on|off  (currently {_screenshots_status()})")
+        else:
+            print(f"Screenshots: {_screenshots_status()}")
+        return True
+
+    if cmd == "/clear":
+        messages.clear()
+        print("Conversation history cleared.")
+        return True
+
+    if cmd == "/help":
+        print(
+            """Commands:
+  /screenshots [on|off]  Toggle tool screenshots
+  /clear                 Clear conversation history
+  /exit, /quit           Exit
+  /help                  Show this help"""
+        )
+        return True
+
+    return False
+
+
 @app.command()
 def run(
     task: str = typer.Argument(..., help="The task to execute, in plain English."),
@@ -163,6 +207,8 @@ def chat(
                 lower = line.lower()
                 if lower in ("/exit", "/quit", "exit", "quit"):
                     break
+                if _handle_slash_command(line, messages):
+                    continue
                 try:
                     reply = await orch.run_chat_turn(
                         messages=messages,
@@ -272,6 +318,8 @@ def chat_main() -> None:
                 lower = line.lower()
                 if lower in ("/exit", "/quit", "exit", "quit"):
                     break
+                if _handle_slash_command(line, messages):
+                    continue
                 try:
                     reply = await orch.run_chat_turn(
                         messages=messages,
