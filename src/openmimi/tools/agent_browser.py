@@ -1755,7 +1755,13 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"visual_locate requires opencv-python: {exc}", is_error=True)
 
         try:
-            png_bytes = await self._take_screenshot_raw()
+            # Use full-resolution screenshot for accurate template matching
+            old_scale = self._screenshot_scale
+            self._screenshot_scale = 1.0
+            try:
+                png_bytes = await self._take_screenshot_raw()
+            finally:
+                self._screenshot_scale = old_scale
             if png_bytes is None:
                 return ToolResult(output="Failed to capture screenshot", is_error=True)
             screen = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
