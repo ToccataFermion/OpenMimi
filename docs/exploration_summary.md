@@ -180,7 +180,15 @@ DL 解法流程：
 | `mouse_move` humanize | 新增 `humanize=true` 参数，使用 Bezier 轨迹 + 加减速曲线模拟人类鼠标移动，替代瞬间跳跃 |
 | `batch` | 批量执行多个桌面动作（`steps` 数组），`bail` 控制遇错是否中断，减少 LLM 往返 |
 
-### 5.2 Bug 修复
+### 5.2 AgentBrowserTool
+
+| 动作 | 说明 |
+|------|------|
+| `get_attribute` | 读取元素 DOM 属性（href, src, data-* 等），支持 ref 或 target_text 定位 |
+| `set_attribute` | 写入元素 DOM 属性，支持 ref 或 target_text 定位 |
+| `get_property` | 读取元素 JS 属性（value, checked, innerText, innerHTML 等） |
+
+### 5.3 Bug 修复
 
 - `click_image`：修复调用不存在的方法 `_mouse_click`，改为正确的 `mouse_move` + `SendInput`
 - `click_text`：修复调用不存在的 `_send_mouse_move` / `_send_mouse_click`，改为正确的异步流程

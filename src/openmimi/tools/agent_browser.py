@@ -53,6 +53,9 @@ _TOOL_DESCRIPTION = (
     "Page source: action='page_source' returns the raw HTML of the current page. "
     "Get URL: action='get_url' returns the current page URL. "
     "Get title: action='get_title' returns the current page title. "
+    "Get attribute: action='get_attribute' with 'ref' or 'target_text' and 'attribute_name' reads a DOM attribute (e.g. href, src, data-id). "
+    "Set attribute: action='set_attribute' with 'ref' or 'target_text', 'attribute_name', and 'attribute_value' writes a DOM attribute. "
+    "Get property: action='get_property' with 'ref' or 'target_text' and 'property_name' reads a JS property (e.g. value, checked, innerText). "
     "Wait for navigation: action='wait_for_navigation' waits for the URL to change after a click or form submission. "
     "Wait for network idle: action='wait_for_network_idle' waits until no fetch/XHR requests are active for idle_duration_ms (default 2000). "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
@@ -473,6 +476,9 @@ class AgentBrowserTool(ToolBase):
                             "page_source",
                             "get_url",
                             "get_title",
+                            "get_attribute",
+                            "set_attribute",
+                            "get_property",
                             "wait_for_navigation",
                             "wait_for_network_idle",
                             "emulate_device",
@@ -685,6 +691,18 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "For action='wait_for_navigation': substring expected in the URL after navigation.",
                     },
+                    "attribute_name": {
+                        "type": "string",
+                        "description": "DOM attribute name for action='get_attribute' or 'set_attribute' (e.g. 'href', 'src', 'data-id').",
+                    },
+                    "attribute_value": {
+                        "type": "string",
+                        "description": "Value to set for action='set_attribute'.",
+                    },
+                    "property_name": {
+                        "type": "string",
+                        "description": "JS property name for action='get_property' (e.g. 'value', 'checked', 'innerText', 'innerHTML').",
+                    },
                     "device_name": {
                         "type": "string",
                         "enum": ["iPhone 14", "iPhone 14 Pro Max", "Pixel 7", "iPad Mini", "reset"],
@@ -795,6 +813,9 @@ class AgentBrowserTool(ToolBase):
             "page_source": self._do_page_source,
             "get_url": self._do_get_url,
             "get_title": self._do_get_title,
+            "get_attribute": self._do_get_attribute,
+            "set_attribute": self._do_set_attribute,
+            "get_property": self._do_get_property,
             "wait_for_navigation": self._do_wait_for_navigation,
             "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
@@ -1424,6 +1445,110 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=title, details={"title": title})
         except Exception as exc:
             return ToolResult(output=f"get_title error: {exc}", is_error=True)
+
+    async def _do_get_attribute(self, inp: dict[str, Any]) -> ToolResult:
+        """Get a DOM attribute of an element by ref or target_text."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        attr_name = str(inp.get("attribute_name", ""))
+        if not attr_name:
+            return ToolResult(output="get_attribute requires 'attribute_name'", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="get_attribute requires 'ref' or 'target_text'", is_error=True)
+        if ref and ref.startswith("@"):
+            el_expr = "document.querySelector(" + json.dumps(ref.lstrip("@")) + ")"
+        elif not target_text:
+            el_expr = "document.querySelector(" + json.dumps(selector) + ")"
+        else:
+            el_expr = "Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim().includes(" + json.dumps(target_text) + "))"
+        js = (
+            "(() => {\n"
+            "  const el = " + el_expr + ";\n"
+            "  if (!el) return {error: 'Element not found'};\n"
+            "  return {value: el.getAttribute(" + json.dumps(attr_name) + ")};\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"get_attribute: {result_value['error']}", is_error=True)
+            value = result_value.get("value") if isinstance(result_value, dict) else None
+            return ToolResult(output=f"Attribute '{attr_name}' = {value!r}", details={"attribute_name": attr_name, "value": value})
+        except Exception as exc:
+            return ToolResult(output=f"get_attribute error: {exc}", is_error=True)
+
+    async def _do_set_attribute(self, inp: dict[str, Any]) -> ToolResult:
+        """Set a DOM attribute of an element by ref or target_text."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        attr_name = str(inp.get("attribute_name", ""))
+        attr_value = str(inp.get("attribute_value", ""))
+        if not attr_name:
+            return ToolResult(output="set_attribute requires 'attribute_name'", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="set_attribute requires 'ref' or 'target_text'", is_error=True)
+        if ref and ref.startswith("@"):
+            el_expr = "document.querySelector(" + json.dumps(ref.lstrip("@")) + ")"
+        elif not target_text:
+            el_expr = "document.querySelector(" + json.dumps(selector) + ")"
+        else:
+            el_expr = "Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim().includes(" + json.dumps(target_text) + "))"
+        js = (
+            "(() => {\n"
+            "  const el = " + el_expr + ";\n"
+            "  if (!el) return {error: 'Element not found'};\n"
+            "  el.setAttribute(" + json.dumps(attr_name) + ", " + json.dumps(attr_value) + ");\n"
+            "  return {ok: true};\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"set_attribute: {result_value['error']}", is_error=True)
+            image = await self._take_screenshot()
+            return ToolResult(output=f"Set attribute '{attr_name}' to {attr_value!r}", base64_image=image)
+        except Exception as exc:
+            return ToolResult(output=f"set_attribute error: {exc}", is_error=True)
+
+    async def _do_get_property(self, inp: dict[str, Any]) -> ToolResult:
+        """Get a JS property of an element by ref or target_text."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        prop_name = str(inp.get("property_name", ""))
+        if not prop_name:
+            return ToolResult(output="get_property requires 'property_name'", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="get_property requires 'ref' or 'target_text'", is_error=True)
+        if ref and ref.startswith("@"):
+            el_expr = "document.querySelector(" + json.dumps(ref.lstrip("@")) + ")"
+        elif not target_text:
+            el_expr = "document.querySelector(" + json.dumps(selector) + ")"
+        else:
+            el_expr = "Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim().includes(" + json.dumps(target_text) + "))"
+        js = (
+            "(() => {\n"
+            "  const el = " + el_expr + ";\n"
+            "  if (!el) return {error: 'Element not found'};\n"
+            "  return {value: el[" + json.dumps(prop_name) + "]};\n"
+            "})()"
+        )
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(output=f"get_property: {result_value['error']}", is_error=True)
+            value = result_value.get("value") if isinstance(result_value, dict) else None
+            return ToolResult(output=f"Property '{prop_name}' = {value!r}", details={"property_name": prop_name, "value": value})
+        except Exception as exc:
+            return ToolResult(output=f"get_property error: {exc}", is_error=True)
 
     async def _do_wait_for_navigation(self, inp: dict[str, Any]) -> ToolResult:
         """Wait for the page URL to change, indicating navigation has occurred."""

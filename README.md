@@ -66,6 +66,9 @@ python scripts/xft_advanced_login.py
 | `page_source` | Raw HTML of the current page |
 | `get_url` | Current page URL |
 | `get_title` | Current page title |
+| `get_attribute` | Read a DOM attribute (href, src, data-*, etc.) |
+| `set_attribute` | Write a DOM attribute |
+| `get_property` | Read a JS property (value, checked, innerText, etc.) |
 | `get_box` | Element bounding box for OS-level mouse coordination |
 | `visual_locate` | Find element by OpenCV template matching on screenshot |
 | `scroll_into_view` | Bring element into viewport |
