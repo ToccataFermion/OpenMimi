@@ -47,7 +47,8 @@ _TOOL_DESCRIPTION = (
     "- wait milliseconds=1000: pause briefly for UI to settle\n"
     "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)\n"
     "- list_windows: enumerate all visible windows with titles and positions\n"
-    "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard"
+    "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard\n"
+    "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias"
 )
 
 # Windows input constants
@@ -266,6 +267,7 @@ class ComputerTool(ToolBase):
                             "locate",
                             "list_windows",
                             "clipboard",
+                            "launch",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -336,6 +338,19 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Text to write to clipboard (for clipboard_action='write').",
                     },
+                    "command": {
+                        "type": "string",
+                        "description": "Command or executable path to launch (action='launch'). Can be a full path, an executable name, or a common alias like 'notepad', 'calc', 'chrome'.",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Arguments to pass to the launched command (action='launch').",
+                    },
+                    "wait_ms": {
+                        "type": "integer",
+                        "description": "Milliseconds to wait after launching (action='launch', default 2000).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -367,6 +382,7 @@ class ComputerTool(ToolBase):
             "locate": self._do_locate,
             "list_windows": self._do_list_windows,
             "clipboard": self._do_clipboard,
+            "launch": self._do_launch,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -705,6 +721,67 @@ class ComputerTool(ToolBase):
                 return ToolResult(output=f"Clipboard write error: {exc}", is_error=True)
 
         return ToolResult(output=f"Unknown clipboard action: {cb_action}", is_error=True)
+
+    async def _do_launch(self, inp: dict[str, Any]) -> ToolResult:
+        """Launch an application by path, command, or common alias."""
+        import shutil
+        import subprocess
+
+        command = str(inp.get("command", "")).strip()
+        if not command:
+            return ToolResult(output="launch requires 'command'", is_error=True)
+
+        args = [str(a) for a in inp.get("args", [])]
+        wait_ms = max(0, int(inp.get("wait_ms", 2000)))
+
+        # Common aliases
+        _COMMON_ALIASES: dict[str, str] = {
+            "notepad": "notepad.exe",
+            "calc": "calc.exe",
+            "calculator": "calc.exe",
+            "chrome": "chrome.exe",
+            "edge": "msedge.exe",
+            "firefox": "firefox.exe",
+            "explorer": "explorer.exe",
+            "cmd": "cmd.exe",
+            "terminal": "wt.exe",
+            "vscode": "code.exe",
+        }
+
+        resolved = _COMMON_ALIASES.get(command.lower())
+        if resolved:
+            command = resolved
+
+        # Try to resolve via PATH
+        exe_path = shutil.which(command)
+        if exe_path:
+            cmd_list = [exe_path] + args
+        else:
+            # Try as-is (might be a file path or URL)
+            cmd_list = [command] + args
+
+        try:
+            # Use start_new_session (detached on Unix) or creationflags on Windows
+            # to avoid blocking and to keep the process alive after our subprocess returns.
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    cmd_list,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.Popen(
+                    cmd_list,
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            if wait_ms > 0:
+                time.sleep(wait_ms / 1000.0)
+            return ToolResult(output=f"Launched: {' '.join(cmd_list)}")
+        except Exception as exc:
+            return ToolResult(output=f"Launch failed: {exc}", is_error=True)
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)
