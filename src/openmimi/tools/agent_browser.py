@@ -1112,6 +1112,7 @@ class AgentBrowserTool(ToolBase):
         touch = preset["touch"]
 
         # Try CDP Emulation.setDeviceMetricsOverride first
+        touch_js = f"await window.__openmimi_cdp_send('Emulation.setTouchEmulationEnabled', {{enabled: {str(touch).lower()}, maxTouchPoints: 5}});" if touch else ""
         cdp_js = f"""
         (async () => {{
             try {{
@@ -1122,6 +1123,7 @@ class AgentBrowserTool(ToolBase):
                     mobile: {str(mobile).lower()},
                 }});
                 {'await window.__openmimi_cdp_send("Emulation.setUserAgentOverride", {userAgent: ' + json.dumps(ua) + '});' if ua else ''}
+                {touch_js}
                 return {{ok: true, method: 'cdp', device: {json.dumps(device_name)}}};
             }} catch (e) {{
                 return {{error: e.message, note: 'CDP emulation failed'}};
