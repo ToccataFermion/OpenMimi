@@ -141,6 +141,40 @@ DL 解法流程：
   - 结构化 extraction 替代 raw eval
   - page_source 调试 fallback
 
+## 4. 新增工具能力（第三批次，2026-05-08）
+
+### 4.1 AgentBrowserTool
+
+| 动作 | 说明 |
+|------|------|
+| `react_fill` | React/Vue 受控输入专用填充：HTMLInputElement.prototype.value setter + dispatchEvent(input/change) |
+| `get_url` | 返回当前页面 URL（无需 eval） |
+| `get_title` | 返回当前页面 title（无需 eval） |
+| `cdp` | 直接发送任意 Chrome DevTools Protocol 命令（escape hatch） |
+| `key_combo` | CDP 级多键同时按下（如 ['Control','a'] 全选） |
+
+### 4.2 CDP 深度集成
+
+- **Cookie 操作全面 CDP 化**：`storage_action` 的 get/set/delete/clear 均优先使用 `Network.*` CDP API
+  - `getAllCookies`：读取含 HTTP-only 的完整 cookie jar
+  - `setCookie`：按当前页面 URL 写入 cookie
+  - `deleteCookies`：按名称删除单条 cookie
+  - `clearBrowserCookies`：清空所有 cookie
+- **Session 持久化 CDP 化**：`save_session` / `load_session` 自动检测 cookie 格式
+  - 保存时优先导出 CDP 结构化数组（含 domain/path/expires）
+  - 加载时若检测到结构化数组，使用 `Network.setCookie` 逐条恢复
+  - 若检测到旧版字符串，回退到 `document.cookie` 保持兼容
+
+### 4.3 ComputerTool
+
+| 动作 | 说明 |
+|------|------|
+| `click_image` | OpenCV 模板匹配找到屏幕图像并点击其中心 |
+
+## 5. 脚本更新
+
+- `scripts/xft_advanced_login.py` 已迁移至 `react_fill`，移除内联 `setReactValue` eval JS
+
 ## 6. 下一步方向
 
 ### 6.1 高优先级
@@ -152,8 +186,8 @@ DL 解法流程：
 ### 6.2 中优先级
 
 4. **行为级反检测增强** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
-5. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案
-6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入
+5. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案（原始维护者 2025-03 后失联，社区 fork 活跃中）
+6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入（click_image 已覆盖视觉场景）
 
 ### 6.3 长期
 
