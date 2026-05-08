@@ -2395,67 +2395,100 @@ class AgentBrowserTool(ToolBase):
             pass
         return None
 
-    async def _exec(self, *args: str, timeout: float | None = None) -> Any:
+    async def _exec(self, *args: str, timeout: float | None = None, _retries: int = 2) -> Any:
         """Run agent-browser CLI and return stdout/stderr.
 
         Uses subprocess.run in a thread-pool executor because
         asyncio.create_subprocess_* hangs indefinitely with the
         agent-browser native binary on Windows.
+
+        Automatically retries transient failures (timeouts, CDP disconnects)
+        with exponential backoff.
         """
-        cmd_list = [self._executable]
-        if not self._headless:
-            cmd_list.append("--headed")
-        cmd_list.extend(args)
-        shell = self._use_shell
-        print(f"[agent-browser exec] {' '.join(cmd_list)}", file=sys.stderr, flush=True)
+        import time
+        last_err: Exception | None = None
+        for attempt in range(_retries + 1):
+            cmd_list = [self._executable]
+            if not self._headless:
+                cmd_list.append("--headed")
+            cmd_list.extend(args)
+            shell = self._use_shell
+            if attempt > 0:
+                wait = 0.5 * (2 ** attempt)
+                print(f"[agent-browser retry] attempt {attempt + 1}/{_retries + 1} after {wait:.1f}s", file=sys.stderr, flush=True)
+                await asyncio.sleep(wait)
+            print(f"[agent-browser exec] {' '.join(cmd_list)}", file=sys.stderr, flush=True)
 
-        tout = timeout if timeout is not None else _DEFAULT_TIMEOUT_S
+            tout = timeout if timeout is not None else _DEFAULT_TIMEOUT_S
+            env = self._browser_env()
 
-        env = self._browser_env()
-
-        def _run() -> subprocess.CompletedProcess[str]:
-            if shell:
+            def _run() -> subprocess.CompletedProcess[str]:
+                if shell:
+                    return subprocess.run(
+                        " ".join(cmd_list),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=tout,
+                        shell=True,
+                        env=env,
+                    )
                 return subprocess.run(
-                    " ".join(cmd_list),
+                    cmd_list,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=tout,
-                    shell=True,
                     env=env,
                 )
-            return subprocess.run(
-                cmd_list,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=tout,
-                env=env,
-            )
 
-        loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, _run),
-            timeout=tout + 5.0,
-        )
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+            try:
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run),
+                    timeout=tout + 5.0,
+                )
+                stdout = result.stdout.strip()
+                stderr = result.stderr.strip()
 
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"agent-browser failed (exit {result.returncode}): {stderr or stdout}"
-            )
+                if result.returncode != 0:
+                    # Some errors are transient (stale element, CDP disconnect)
+                    err_msg = stderr or stdout
+                    is_transient = any(
+                        kw in err_msg.lower()
+                        for kw in ("timeout", "disconnected", "stale", "detached", "not found", " Protocol error")
+                    )
+                    if is_transient and attempt < _retries:
+                        last_err = RuntimeError(f"agent-browser failed (exit {result.returncode}): {err_msg}")
+                        continue
+                    raise RuntimeError(
+                        f"agent-browser failed (exit {result.returncode}): {err_msg}"
+                    )
 
-        class _Result:
-            pass
-        r = _Result()
-        r.stdout = stdout
-        r.stderr = stderr
-        r.returncode = result.returncode
-        print(f"[agent-browser result] rc={result.returncode} stdout_len={len(stdout)} stderr_len={len(stderr)}", file=sys.stderr, flush=True)
-        return r
+                class _Result:
+                    pass
+                r = _Result()
+                r.stdout = stdout
+                r.stderr = stderr
+                r.returncode = result.returncode
+                print(f"[agent-browser result] rc={result.returncode} stdout_len={len(stdout)} stderr_len={len(stderr)}", file=sys.stderr, flush=True)
+                return r
+            except (TimeoutError, asyncio.TimeoutError, subprocess.TimeoutExpired) as exc:
+                last_err = exc
+                if attempt < _retries:
+                    continue
+                raise RuntimeError(f"agent-browser timed out after {tout}s (attempted {_retries + 1} times)") from exc
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                last_err = exc
+                if attempt < _retries:
+                    continue
+                raise
+        # Should never reach here, but satisfy type checker
+        raise last_err or RuntimeError("agent-browser exec failed")
 
     def _parse_json(self, text: str) -> dict[str, Any]:
         try:
