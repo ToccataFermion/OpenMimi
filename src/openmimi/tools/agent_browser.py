@@ -50,6 +50,7 @@ _TOOL_DESCRIPTION = (
     "Scroll into view: action='scroll_into_view' with 'ref' or 'target_text' brings an element into the viewport. "
     "Page source: action='page_source' returns the raw HTML of the current page. "
     "Wait for navigation: action='wait_for_navigation' waits for the URL to change after a click or form submission. "
+    "Wait for network idle: action='wait_for_network_idle' waits until no fetch/XHR requests are active for idle_duration_ms (default 2000). "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
     "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
@@ -398,6 +399,7 @@ class AgentBrowserTool(ToolBase):
                             "scroll_into_view",
                             "page_source",
                             "wait_for_navigation",
+                            "wait_for_network_idle",
                             "emulate_device",
                         ],
                         "description": "The browser action to perform.",
@@ -510,7 +512,7 @@ class AgentBrowserTool(ToolBase):
                     },
                     "timeout_ms": {
                         "type": "integer",
-                        "description": "Timeout in milliseconds for wait_for (default 10000).",
+                        "description": "Timeout in milliseconds for wait_for and wait_for_network_idle (default 10000).",
                     },
                     "interval_ms": {
                         "type": "integer",
@@ -604,6 +606,10 @@ class AgentBrowserTool(ToolBase):
                         "enum": ["iPhone 14", "iPhone 14 Pro Max", "Pixel 7", "iPad Mini", "reset"],
                         "description": "Device preset for action='emulate_device'. Use 'reset' to restore desktop.",
                     },
+                    "idle_duration_ms": {
+                        "type": "integer",
+                        "description": "For action='wait_for_network_idle': ms of no network activity before returning (default 2000).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -690,6 +696,7 @@ class AgentBrowserTool(ToolBase):
             "scroll_into_view": self._do_scroll_into_view,
             "page_source": self._do_page_source,
             "wait_for_navigation": self._do_wait_for_navigation,
+            "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
         }
         handler = handlers.get(action)
@@ -1090,6 +1097,93 @@ class AgentBrowserTool(ToolBase):
             await asyncio.sleep(interval_ms / 1000.0)
         return ToolResult(
             output=f"wait_for_navigation timed out after {timeout_ms}ms (URL did not change from {start_url})",
+            is_error=True,
+        )
+
+    async def _do_wait_for_network_idle(self, inp: dict[str, Any]) -> ToolResult:
+        """Wait until no network requests have been active for a specified duration.
+
+        This is useful for SPAs that load data asynchronously after navigation
+        or clicks. It tracks in-flight fetch/XHR requests and returns only when
+        the count drops to zero and stays there for `idle_duration_ms`.
+        """
+        idle_duration_ms = inp.get("idle_duration_ms", 2000)
+        timeout_ms = inp.get("timeout_ms", 30000)
+        interval_ms = inp.get("interval_ms", 500)
+
+        # Install enhanced interceptor that tracks in-flight request count
+        setup_js = """
+        (() => {
+            if (window.__openmimi_network_idle_hooked) return {ok: true, already: true};
+            window.__openmimi_network_idle_count = 0;
+            window.__openmimi_network_last_active = Date.now();
+
+            const origFetch = window.fetch;
+            window.fetch = function(...args) {
+                window.__openmimi_network_idle_count++;
+                window.__openmimi_network_last_active = Date.now();
+                return origFetch.apply(this, args).finally(() => {
+                    window.__openmimi_network_idle_count--;
+                    window.__openmimi_network_last_active = Date.now();
+                });
+            };
+
+            const origXHRSend = window.XMLHttpRequest.prototype.send;
+            window.XMLHttpRequest.prototype.send = function(body) {
+                window.__openmimi_network_idle_count++;
+                window.__openmimi_network_last_active = Date.now();
+                const self = this;
+                const onDone = () => {
+                    window.__openmimi_network_idle_count--;
+                    window.__openmimi_network_last_active = Date.now();
+                    self.removeEventListener('loadend', onDone);
+                };
+                this.addEventListener('loadend', onDone);
+                return origXHRSend.call(this, body);
+            };
+
+            window.__openmimi_network_idle_hooked = true;
+            return {ok: true, already: false};
+        })()
+        """
+        try:
+            await self._exec("eval", setup_js, "--json")
+        except Exception:
+            pass
+
+        start = time.monotonic()
+        while (time.monotonic() - start) * 1000 < timeout_ms:
+            try:
+                poll_js = f"""
+                (() => {{
+                    const count = window.__openmimi_network_idle_count || 0;
+                    const lastActive = window.__openmimi_network_last_active || 0;
+                    const now = Date.now();
+                    const idleFor = now - lastActive;
+                    return {{
+                        count,
+                        idleFor,
+                        idle: count === 0 && idleFor >= {int(idle_duration_ms)}
+                    }};
+                }})()
+                """
+                result = await self._exec("eval", poll_js, "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                if isinstance(result_value, dict) and result_value.get("idle"):
+                    return ToolResult(
+                        output=f"Network idle for {result_value.get('idleFor', 0)}ms (no active requests)",
+                        details={
+                            "idle_duration_ms": result_value.get("idleFor", 0),
+                            "in_flight": result_value.get("count", 0),
+                        },
+                    )
+            except Exception:
+                pass
+            await asyncio.sleep(interval_ms / 1000.0)
+
+        return ToolResult(
+            output=f"wait_for_network_idle timed out after {timeout_ms}ms",
             is_error=True,
         )
 
