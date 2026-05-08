@@ -617,9 +617,22 @@ class ComputerTool(ToolBase):
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             win32gui.SetForegroundWindow(hwnd)
+            rect = win32gui.GetWindowRect(hwnd)
+            info = {
+                "title": full_title,
+                "left": rect[0],
+                "top": rect[1],
+                "right": rect[2],
+                "bottom": rect[3],
+                "width": rect[2] - rect[0],
+                "height": rect[3] - rect[1],
+            }
         except Exception as exc:
             return ToolResult(output=f"Failed to focus '{full_title}': {exc}", is_error=True)
-        return ToolResult(output=f"Focused window: {full_title}")
+        return ToolResult(
+            output=f"Focused window: {full_title} at ({info['left']},{info['top']}) size {info['width']}x{info['height']}",
+            details=info,
+        )
 
     async def _do_wait(self, inp: dict[str, Any]) -> ToolResult:
         ms = max(0, int(inp.get("milliseconds", 1000)))
