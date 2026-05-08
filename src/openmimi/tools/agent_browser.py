@@ -34,7 +34,7 @@ from .result import ToolResult
 _TOOL_DESCRIPTION = (
     "Operate a Chromium browser via agent-browser (Rust CLI). "
     "Core workflow: 1) Call action='snapshot' to get an accessibility tree with @eN refs; "
-    "2) Use those refs in action='click' / 'type' / 'fill' / 'hover' / 'drag' via the 'ref' field; "
+    "2) Use those refs in action='click' / 'right_click' / 'double_click' / 'type' / 'fill' / 'hover' / 'drag' via the 'ref' field; "
     "3) Call action='screenshot' when visual verification is needed. "
     "If no ref is known, use 'target_text' for semantic text matching. "
     "Navigation: action='navigate' with 'url', or 'back' / 'forward' / 'reload'. "
@@ -367,6 +367,8 @@ class AgentBrowserTool(ToolBase):
                             "reload",
                             "snapshot",
                             "click",
+                            "right_click",
+                            "double_click",
                             "check",
                             "uncheck",
                             "type",
@@ -671,6 +673,8 @@ class AgentBrowserTool(ToolBase):
             "reload": self._do_reload,
             "snapshot": self._do_snapshot,
             "click": self._do_click,
+            "right_click": self._do_right_click,
+            "double_click": self._do_double_click,
             "check": self._do_check,
             "uncheck": self._do_uncheck,
             "type": self._do_type,
@@ -908,6 +912,77 @@ class AgentBrowserTool(ToolBase):
         image = await self._take_screenshot()
         return ToolResult(
             output=f"Force-clicked {selector} at ({x}, {y}) via mouse down/up",
+            base64_image=image,
+        )
+
+    async def _do_right_click(self, inp: dict[str, Any]) -> ToolResult:
+        """Right-click an element via CDP mouse sequence."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="right_click requires 'ref' or 'target_text'")
+        try:
+            result = await self._exec("get", "box", selector, "--json")
+            data = self._parse_data(result.stdout)
+            box = data.get("box") if isinstance(data, dict) else None
+            if not box:
+                return ToolResult(
+                    output=f"right_click failed: could not get box for {selector}",
+                    is_error=True,
+                )
+            x = int(box.get("x", 0) + box.get("width", 0) / 2)
+            y = int(box.get("y", 0) + box.get("height", 0) / 2)
+        except Exception as exc:
+            return ToolResult(
+                output=f"right_click failed getting box: {exc}",
+                is_error=True,
+            )
+        await self._exec("mouse", "move", str(x), str(y), "--json")
+        await asyncio.sleep(0.05)
+        await self._exec("mouse", "down", "right", "--json")
+        await asyncio.sleep(0.05)
+        await self._exec("mouse", "up", "right", "--json")
+        await asyncio.sleep(0.1)
+        image = await self._take_screenshot()
+        return ToolResult(
+            output=f"Right-clicked {selector} at ({x}, {y})",
+            base64_image=image,
+        )
+
+    async def _do_double_click(self, inp: dict[str, Any]) -> ToolResult:
+        """Double-click an element via CDP mouse sequence."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="double_click requires 'ref' or 'target_text'")
+        try:
+            result = await self._exec("get", "box", selector, "--json")
+            data = self._parse_data(result.stdout)
+            box = data.get("box") if isinstance(data, dict) else None
+            if not box:
+                return ToolResult(
+                    output=f"double_click failed: could not get box for {selector}",
+                    is_error=True,
+                )
+            x = int(box.get("x", 0) + box.get("width", 0) / 2)
+            y = int(box.get("y", 0) + box.get("height", 0) / 2)
+        except Exception as exc:
+            return ToolResult(
+                output=f"double_click failed getting box: {exc}",
+                is_error=True,
+            )
+        await self._exec("mouse", "move", str(x), str(y), "--json")
+        for _ in range(2):
+            await asyncio.sleep(0.05)
+            await self._exec("mouse", "down", "left", "--json")
+            await asyncio.sleep(0.05)
+            await self._exec("mouse", "up", "left", "--json")
+        await asyncio.sleep(0.1)
+        image = await self._take_screenshot()
+        return ToolResult(
+            output=f"Double-clicked {selector} at ({x}, {y})",
             base64_image=image,
         )
 

@@ -76,6 +76,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- React SPA click fallback: if click(e21) or any element click does nothing, "
     "  immediately retry with force=true. Also try action='mouse' sequence "
     "  (move to element center -> down -> up) or focus the element and press Enter.\n"
+    "- Use action='right_click' or action='double_click' for context menus or "
+    "  elements that require double-click activation.\n"
     "- Use action='wait_for' with ref or target_text when SPA content loads lazily "
     "  (e.g., after clicking a tab or submitting a form). This polls until the element "
     "  appears, avoiding brittle sleep calls.\n"

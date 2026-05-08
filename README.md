@@ -43,6 +43,8 @@ python scripts/xft_advanced_login.py
 | `navigate` | Load a URL |
 | `back` / `forward` / `reload` | Browser navigation |
 | `click` | Click by accessibility ref or text match |
+| `right_click` | Right-click by accessibility ref or text match |
+| `double_click` | Double-click by accessibility ref or text match |
 | `check` / `uncheck` | Toggle checkboxes (never click them) |
 | `type` / `fill` | Type text into inputs |
 | `press` | Press a key (Enter, Escape, Tab, etc.) |
