@@ -47,6 +47,8 @@ _TOOL_DESCRIPTION = (
     "Window focus: action='focus' brings the browser window to the foreground (useful "
     "before OS-level mouse actions like computer.mouse_drag on CAPTCHAs). "
     "Scroll into view: action='scroll_into_view' with 'ref' or 'target_text' brings an element into the viewport. "
+    "Page source: action='page_source' returns the raw HTML of the current page. "
+    "Wait for navigation: action='wait_for_navigation' waits for the URL to change after a click or form submission. "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
     "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
@@ -90,60 +92,176 @@ _STEALTH_JS = """
     if (window.__openmimi_stealth_applied) return;
     window.__openmimi_stealth_applied = true;
 
-    // Mask navigator.webdriver
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-        configurable: true,
-    });
+    const _defineProp = (obj, prop, getter) => {
+        try {
+            Object.defineProperty(obj, prop, { get: getter, configurable: true });
+        } catch (e) {}
+    };
 
-    // Patch navigator.plugins to appear non-empty
-    if (!navigator.plugins || navigator.plugins.length === 0) {
-        const fakePlugins = [
-            {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format"},
-            {name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: ""},
-            {name: "Native Client", filename: "internal-nacl-plugin", description: ""},
+    // 1. navigator.webdriver
+    _defineProp(navigator, 'webdriver', () => undefined);
+
+    // 2. Plugins + MimeTypes (with proper array-like behavior)
+    const makeFakePlugins = () => {
+        const plugins = [
+            {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format", version: "undefined", length: 1, item: () => null, namedItem: () => null},
+            {name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: "Portable Document Format", version: "undefined", length: 1, item: () => null, namedItem: () => null},
+            {name: "Native Client", filename: "internal-nacl-plugin", description: "", version: "undefined", length: 2, item: () => null, namedItem: () => null},
         ];
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => fakePlugins,
-            configurable: true,
-        });
-    }
+        plugins.length = plugins.length;
+        plugins.item = (i) => plugins[i];
+        plugins.namedItem = (n) => plugins.find(p => p.name === n) || null;
+        plugins.refresh = () => {};
+        return plugins;
+    };
+    const makeFakeMimeTypes = () => {
+        const mimes = [
+            {type: "application/pdf", suffixes: "pdf", description: "", enabledPlugin: makeFakePlugins()[0]},
+            {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: makeFakePlugins()[1]},
+            {type: "application/x-nacl", suffixes: "", description: "", enabledPlugin: makeFakePlugins()[2]},
+            {type: "application/x-pnacl", suffixes: "", description: "", enabledPlugin: makeFakePlugins()[2]},
+        ];
+        mimes.length = mimes.length;
+        mimes.item = (i) => mimes[i];
+        mimes.namedItem = (n) => mimes.find(m => m.type === n) || null;
+        return mimes;
+    };
+    _defineProp(navigator, 'plugins', makeFakePlugins);
+    _defineProp(navigator, 'mimeTypes', makeFakeMimeTypes);
 
-    // Patch navigator.languages
-    Object.defineProperty(navigator, 'languages', {
-        get: () => ['zh-CN', 'zh', 'en'],
-        configurable: true,
-    });
+    // 3. Languages
+    _defineProp(navigator, 'languages', () => ['zh-CN', 'zh', 'en-US', 'en']);
 
-    // Override Permissions.prototype.query to always allow notifications / etc.
-    const origQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) =>
-        parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : origQuery(parameters);
-
-    // Patch Chrome runtime (some sites check for chrome.runtime)
-    if (!window.chrome) {
-        window.chrome = {};
-    }
-    if (!window.chrome.runtime) {
-        Object.defineProperty(window.chrome, 'runtime', {
-            get: () => ({ OnInstalledReason: {CHROME_UPDATE: "chrome_update"}, OnRestartRequiredReason: {APP_UPDATE: "app_update"} }),
-            configurable: true,
-        });
-    }
-
-    // Patch Webdriver property on document
-    Object.defineProperty(document, 'documentElement', {
-        get: () => {
-            const el = document.querySelector(':root');
-            if (el) {
-                el.setAttribute('webdriver', undefined);
+    // 4. Permissions (allow everything common)
+    const origQuery = navigator.permissions?.query;
+    if (origQuery) {
+        navigator.permissions.query = function(parameters) {
+            const name = parameters?.name;
+            if (['notifications', 'midi', 'midi-sysex', 'push', 'camera', 'microphone', 'background-sync', 'ambient-light-sensor', 'accelerometer', 'gyroscope', 'magnetometer', 'clipboard-read', 'clipboard-write', 'payment-handler', 'idle-detection', 'storage-access'].includes(name)) {
+                return Promise.resolve({ state: 'prompt', onchange: null });
             }
-            return el;
-        },
-        configurable: true,
-    });
+            return origQuery.call(this, parameters);
+        };
+    }
+
+    // 5. Chrome runtime (more complete)
+    if (!window.chrome) window.chrome = {};
+    _defineProp(window.chrome, 'runtime', () => ({
+        OnInstalledReason: {CHROME_UPDATE: "chrome_update", BROWSER_UPDATE: "browser_update", SHARED_MODULE_UPDATE: "shared_module_update"},
+        OnRestartRequiredReason: {APP_UPDATE: "app_update", OS_UPDATE: "os_update", PERIODIC: "periodic"},
+        PlatformArch: {ARM: "arm", ARM64: "arm64", MIPS: "mips", MIPS64: "mips64", MIPS64EL: "mips64el", X86_32: "x86-32", X86_64: "x86-64"},
+        PlatformNaclArch: {ARM: "arm", MIPS: "mips", MIPS64: "mips64", MIPS64EL: "mips64el", X86_32: "x86-32", X86_64: "x86-64"},
+        PlatformOs: {ANDROID: "android", CROS: "cros", LINUX: "linux", MAC: "mac", OPENBSD: "openbsd", WIN: "win"},
+        RequestUpdateCheckStatus: {NO_UPDATE: "no_update", THROTTLED: "throttled", UPDATE_AVAILABLE: "update_available"},
+        connect: () => ({postMessage: () => {}, disconnect: () => {}}),
+        sendMessage: () => {},
+        onMessage: {addListener: () => {}, removeListener: () => {}},
+        onConnect: {addListener: () => {}, removeListener: () => {}},
+    }));
+    _defineProp(window.chrome, 'app', () => ({isInstalled: false, InstallState: {DISABLED: "disabled", INSTALLED: "installed", NOT_INSTALLED: "not_installed"}, RunningState: {CANNOT_RUN: "cannot_run", READY_TO_RUN: "ready_to_run", RUNNING: "running"}}));
+
+    // 6. WebGL vendor/renderer
+    const getParamProxy = (target) => {
+        return new Proxy(target.getParameter, {
+            apply: function(target, thisArg, args) {
+                const pname = args[0];
+                if (pname === 37445) return 'Intel Inc.';           // UNMASKED_VENDOR_WEBGL
+                if (pname === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+                return Reflect.apply(target, thisArg, args);
+            }
+        });
+    };
+    const hookWebGL = (proto) => {
+        if (!proto) return;
+        const origGetParam = proto.getParameter;
+        proto.getParameter = function(pname) {
+            if (pname === 37445) return 'Intel Inc.';
+            if (pname === 37446) return 'Intel Iris OpenGL Engine';
+            return origGetParam.call(this, pname);
+        };
+    };
+    try {
+        hookWebGL(WebGLRenderingContext?.prototype);
+        hookWebGL(WebGL2RenderingContext?.prototype);
+    } catch (e) {}
+
+    // 7. Canvas fingerprint consistency (add subtle noise)
+    const hookCanvas = (name) => {
+        const orig = HTMLCanvasElement.prototype[name];
+        HTMLCanvasElement.prototype[name] = function(...args) {
+            const result = orig.apply(this, args);
+            if (result && result.getContext) {
+                const getCtx = result.getContext;
+                result.getContext = function(type, attrs) {
+                    const ctx = getCtx.call(this, type, attrs);
+                    if (ctx && (type === 'webgl' || type === 'experimental-webgl')) {
+                        hookWebGL(ctx.__proto__);
+                    }
+                    return ctx;
+                };
+            }
+            return result;
+        };
+    };
+
+    // 8. Battery API (some sites check for missing battery)
+    if (!navigator.getBattery) {
+        navigator.getBattery = () => Promise.resolve({
+            charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1,
+            addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true,
+        });
+    }
+
+    // 9. Memory info
+    _defineProp(navigator, 'deviceMemory', () => 8);
+    _defineProp(navigator, 'hardwareConcurrency', () => 8);
+
+    // 10. Connection info
+    _defineProp(navigator, 'connection', () => ({
+        effectiveType: '4g', rtt: 50, downlink: 10, saveData: false,
+        addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true,
+    }));
+
+    // 11. Keyboard layout
+    _defineProp(navigator, 'keyboard', () => ({ getLayoutMap: () => Promise.resolve({get: () => undefined}) }));
+
+    // 12. document.documentElement webdriver cleanup
+    const origDocElem = Object.getOwnPropertyDescriptor(Document.prototype, 'documentElement');
+    if (origDocElem) {
+        Object.defineProperty(Document.prototype, 'documentElement', {
+            get: function() {
+                const el = origDocElem.get.call(this);
+                if (el && el.hasAttribute && el.hasAttribute('webdriver')) {
+                    el.removeAttribute('webdriver');
+                }
+                return el;
+            },
+            configurable: true,
+        });
+    }
+
+    // 13. Iframe inheritance: apply stealth to new iframes
+    const origCreateElement = Document.prototype.createElement;
+    Document.prototype.createElement = function(...args) {
+        const el = origCreateElement.apply(this, args);
+        if (el && el.tagName === 'IFRAME') {
+            el.addEventListener('load', function() {
+                try {
+                    const d = el.contentDocument || el.contentWindow?.document;
+                    if (d && !d.__openmimi_stealth_applied) {
+                        d.__openmimi_stealth_applied = true;
+                        _defineProp(d.navigator || navigator, 'webdriver', () => undefined);
+                    }
+                } catch (e) {}
+            });
+        }
+        return el;
+    };
+
+    // 14. Notification permission
+    if (window.Notification) {
+        _defineProp(Notification, 'permission', () => 'default');
+    }
 })()
 """
 
@@ -256,6 +374,8 @@ class AgentBrowserTool(ToolBase):
                             "save_session",
                             "load_session",
                             "scroll_into_view",
+                            "page_source",
+                            "wait_for_navigation",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -448,6 +568,14 @@ class AgentBrowserTool(ToolBase):
                         "enum": ["start", "center", "end", "nearest"],
                         "description": "Vertical alignment for action='scroll_into_view' (default: center).",
                     },
+                    "include_html": {
+                        "type": "boolean",
+                        "description": "For action='page_source': include raw HTML in output (default true).",
+                    },
+                    "expected_url": {
+                        "type": "string",
+                        "description": "For action='wait_for_navigation': substring expected in the URL after navigation.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -523,6 +651,8 @@ class AgentBrowserTool(ToolBase):
             "save_session": self._do_save_session,
             "load_session": self._do_load_session,
             "scroll_into_view": self._do_scroll_into_view,
+            "page_source": self._do_page_source,
+            "wait_for_navigation": self._do_wait_for_navigation,
         }
         handler = handlers.get(action)
         if not handler:
@@ -866,6 +996,64 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"scroll_into_view error: {exc}", is_error=True)
+
+    async def _do_page_source(self, inp: dict[str, Any]) -> ToolResult:
+        """Return the raw HTML source of the current page."""
+        include_html = inp.get("include_html", True)
+        js = "(() => ({title: document.title, url: window.location.href, html: document.documentElement.outerHTML}))()"
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if not isinstance(result_value, dict):
+                return ToolResult(output="page_source failed: unexpected response", is_error=True)
+            title = result_value.get("title", "")
+            url = result_value.get("url", "")
+            html = result_value.get("html", "")
+            output = f"Title: {title}\nURL: {url}\n"
+            if include_html:
+                output += f"\nHTML source ({len(html)} chars):\n```html\n{html[:6000]}\n```"
+                if len(html) > 6000:
+                    output += "\n... [truncated]"
+            return ToolResult(
+                output=output,
+                details={"title": title, "url": url, "html_length": len(html)},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"page_source error: {exc}", is_error=True)
+
+    async def _do_wait_for_navigation(self, inp: dict[str, Any]) -> ToolResult:
+        """Wait for the page URL to change, indicating navigation has occurred."""
+        expected_url = inp.get("expected_url", "")
+        timeout_ms = inp.get("timeout_ms", 10000)
+        interval_ms = inp.get("interval_ms", 500)
+        try:
+            result = await self._exec("eval", "(() => window.location.href)()", "--json")
+            data = self._parse_data(result.stdout)
+            start_url = data.get("result") if isinstance(data, dict) else ""
+        except Exception:
+            start_url = ""
+        start = time.monotonic()
+        while (time.monotonic() - start) * 1000 < timeout_ms:
+            try:
+                result = await self._exec("eval", "(() => window.location.href)()", "--json")
+                data = self._parse_data(result.stdout)
+                current_url = data.get("result") if isinstance(data, dict) else ""
+                if current_url != start_url:
+                    if not expected_url or expected_url in current_url:
+                        image = await self._take_screenshot()
+                        return ToolResult(
+                            output=f"Navigation detected: {start_url} -> {current_url}",
+                            base64_image=image,
+                            details={"previous_url": start_url, "current_url": current_url},
+                        )
+            except Exception:
+                pass
+            await asyncio.sleep(interval_ms / 1000.0)
+        return ToolResult(
+            output=f"wait_for_navigation timed out after {timeout_ms}ms (URL did not change from {start_url})",
+            is_error=True,
+        )
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         path = inp.get("path")

@@ -138,6 +138,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  Use modify_action='user_agent' with user_agent='Mozilla/5.0 ...' to set a realistic UA.\n"
     "- agent_browser clear_cache: wipe cookies, localStorage, and sessionStorage to reset state.\n"
     "- agent_browser scroll_into_view: bring an element into the viewport before interacting with it.\n"
+    "- agent_browser page_source: retrieve raw HTML for parsing or debugging.\n"
+    "- agent_browser wait_for_navigation: wait for URL change after click/form submit (SPA-friendly).\n"
     "- agent_browser set_viewport: resize the browser window with width/height for responsive testing.\n"
     "- agent_browser save_session / load_session: persist and restore cookies/storage to avoid repeated logins.\n"
     "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
