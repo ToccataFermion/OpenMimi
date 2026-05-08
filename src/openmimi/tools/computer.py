@@ -51,6 +51,8 @@ _TOOL_DESCRIPTION = (
     "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
     "- file file_action=read|write file_path [file_content]: read from or write to a file on disk.\n"
     "- get_screen_info: return primary monitor resolution and DPI.\n"
+    "- ocr [x y width height] [language=chi_sim+eng]: extract text from a screen region using Tesseract OCR. "
+    "  If no region is specified, OCR the full screenshot. Useful for reading native app UI or notifications.\n"
     "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )
 
@@ -273,6 +275,7 @@ class ComputerTool(ToolBase):
                             "launch",
                             "file",
                             "get_screen_info",
+                            "ocr",
                             "shell",
                         ],
                         "description": "The desktop action to perform.",
@@ -370,6 +373,18 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Content to write for action='file' with file_action='write'.",
                     },
+                    "width": {
+                        "type": "integer",
+                        "description": "Region width for action='ocr' (default: full screen width).",
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Region height for action='ocr' (default: full screen height).",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Tesseract language code(s) for action='ocr' (default: chi_sim+eng).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -404,6 +419,7 @@ class ComputerTool(ToolBase):
             "launch": self._do_launch,
             "file": self._do_file,
             "get_screen_info": self._do_get_screen_info,
+            "ocr": self._do_ocr,
             "shell": self._do_shell,
         }
         handler = handlers.get(action)
@@ -947,6 +963,56 @@ class ComputerTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"get_screen_info failed: {exc}", is_error=True)
+
+    async def _do_ocr(self, inp: dict[str, Any]) -> ToolResult:
+        """Extract text from a screen region using Tesseract OCR."""
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as exc:
+            return ToolResult(
+                output="OCR requires pytesseract and Pillow. Install with: pip install pytesseract Pillow",
+                is_error=True,
+            )
+
+        x = inp.get("x", 0)
+        y = inp.get("y", 0)
+        width = inp.get("width")
+        height = inp.get("height")
+        language = str(inp.get("language", "chi_sim+eng"))
+
+        try:
+            sct = self._ensure_mss()
+            monitor = sct.monitors[1]
+            # If region specified, crop; otherwise full screen
+            if width is not None and height is not None:
+                region = {
+                    "left": max(0, x),
+                    "top": max(0, y),
+                    "width": min(width, monitor["width"] - x),
+                    "height": min(height, monitor["height"] - y),
+                }
+            else:
+                region = monitor
+
+            raw = sct.grab(region)
+            import mss.tools
+            png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+            img = Image.open(io.BytesIO(png_bytes))
+            # Tesseract expects RGB
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            text = pytesseract.image_to_string(img, lang=language)
+            return ToolResult(
+                output=f"OCR result ({region['width']}x{region['height']} @{region['left']},{region['top']}):\n{text[:2000]}",
+                details={
+                    "text": text,
+                    "region": region,
+                    "language": language,
+                },
+            )
+        except Exception as exc:
+            return ToolResult(output=f"OCR failed: {exc}", is_error=True)
 
     async def _do_shell(self, inp: dict[str, Any]) -> ToolResult:
         """Execute a shell command and return stdout/stderr."""

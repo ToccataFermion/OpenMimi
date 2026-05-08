@@ -147,6 +147,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome').\n"
     "- computer file: read from or write to files on disk (file_action='read'/'write', file_path, file_content).\n"
     "- computer get_screen_info: return primary monitor resolution and DPI.\n"
+    "- computer ocr [x y width height] [language=chi_sim+eng]: extract text from screen region using Tesseract OCR.\n"
+    "  Useful for reading native app UI, notifications, or image-based text.\n"
     "- computer shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )
 
