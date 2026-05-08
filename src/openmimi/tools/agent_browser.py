@@ -56,6 +56,8 @@ _TOOL_DESCRIPTION = (
     "(localStorage, sessionStorage, cookies) to read or modify browser storage. "
     "PDF: action='pdf' with 'file_path' saves the current page as a PDF. "
     "Console: action='console' returns recent browser console logs (errors, warnings, info). "
+    "Clear data: action='clear_cache' wipes cookies, localStorage, and sessionStorage. "
+    "Viewport: action='set_viewport' with 'width' and 'height' resizes the browser window. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -240,6 +242,8 @@ class AgentBrowserTool(ToolBase):
                             "storage",
                             "pdf",
                             "console",
+                            "clear_cache",
+                            "set_viewport",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -392,6 +396,14 @@ class AgentBrowserTool(ToolBase):
                         "enum": ["all", "error", "warn", "info", "log"],
                         "description": "Filter level for action='console' (default: all).",
                     },
+                    "width": {
+                        "type": "integer",
+                        "description": "Viewport width in pixels for action='set_viewport'.",
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Viewport height in pixels for action='set_viewport'.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -461,6 +473,8 @@ class AgentBrowserTool(ToolBase):
             "storage": self._do_storage,
             "pdf": self._do_pdf,
             "console": self._do_console,
+            "clear_cache": self._do_clear_cache,
+            "set_viewport": self._do_set_viewport,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1338,6 +1352,53 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"console failed: {exc}", is_error=True)
+
+    async def _do_clear_cache(self, _inp: dict[str, Any]) -> ToolResult:
+        """Clear cookies, localStorage, sessionStorage, and reload."""
+        js = """
+        (() => {
+            // Clear localStorage
+            localStorage.clear();
+            // Clear sessionStorage
+            sessionStorage.clear();
+            // Clear cookies
+            const cookies = document.cookie.split(';');
+            for (let c of cookies) {
+                const [name] = c.trim().split('=');
+                document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+            }
+            return {ok: true};
+        })()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            output = json.dumps(result_value, ensure_ascii=False, indent=2)[:2000]
+            return ToolResult(output=f"Cache cleared. {output}")
+        except Exception as exc:
+            return ToolResult(output=f"clear_cache failed: {exc}", is_error=True)
+
+    async def _do_set_viewport(self, inp: dict[str, Any]) -> ToolResult:
+        """Resize the browser viewport to the specified width and height."""
+        width = inp.get("width")
+        height = inp.get("height")
+        if width is None or height is None:
+            return ToolResult(output="set_viewport requires 'width' and 'height'", is_error=True)
+        js = f"""
+        (() => {{
+            window.resizeTo({int(width)}, {int(height)});
+            return {{width: window.innerWidth, height: window.innerHeight, screenWidth: window.screen.width, screenHeight: window.screen.height}};
+        }})()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            output = json.dumps(result_value, ensure_ascii=False, indent=2)[:2000]
+            return ToolResult(output=f"Viewport set. {output}")
+        except Exception as exc:
+            return ToolResult(output=f"set_viewport failed: {exc}", is_error=True)
 
     async def _do_close(self) -> ToolResult:
         if self._started:

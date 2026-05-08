@@ -131,6 +131,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  Use storage_action='get' with storage_type='cookies' to read auth tokens.\n"
     "- agent_browser pdf: save the current page as a PDF file for archiving or review.\n"
     "- agent_browser console: capture recent browser console logs to debug JavaScript errors.\n"
+    "- agent_browser clear_cache: wipe cookies, localStorage, and sessionStorage to reset state.\n"
+    "- agent_browser set_viewport: resize the browser window with width/height for responsive testing.\n"
     "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
     "- computer clipboard: read from or write to the system clipboard.\n"
     "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome')."
