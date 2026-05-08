@@ -57,6 +57,8 @@ _TOOL_DESCRIPTION = (
     "Wait for network idle: action='wait_for_network_idle' waits until no fetch/XHR requests are active for idle_duration_ms (default 2000). "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
     "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
+    "Visibility check: action='is_visible' with 'ref' or 'target_text' returns whether "
+    "the element is present and visible (not display:none, visibility:hidden, or zero size). "
     "Visual locate: action='visual_locate' with 'template_path' uses OpenCV template "
     "matching on the page screenshot to find elements by visual appearance. Optional "
     "'click'=true to click on the matched region. Useful for canvas UIs, custom icons, "
@@ -451,6 +453,7 @@ class AgentBrowserTool(ToolBase):
                             "focus",
                             "clipboard",
                             "get_box",
+                            "is_visible",
                             "visual_locate",
                             "wait_for",
                             "wait_for_disappear",
@@ -771,6 +774,7 @@ class AgentBrowserTool(ToolBase):
             "focus": self._do_focus,
             "clipboard": self._do_clipboard,
             "get_box": self._do_get_box,
+            "is_visible": self._do_is_visible,
             "visual_locate": self._do_visual_locate,
             "wait_for": self._do_wait_for,
             "wait_for_disappear": self._do_wait_for_disappear,
@@ -1987,6 +1991,55 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(
                 output=f"get_box failed for {selector}: {exc}", is_error=True
             )
+
+    async def _do_is_visible(self, inp: dict[str, Any]) -> ToolResult:
+        """Check if an element is present and visible in the viewport."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="is_visible requires 'ref' or 'target_text'", is_error=True)
+        try:
+            if ref:
+                css_selector = ref.lstrip("@")
+                js = f"""
+                (() => {{
+                    const el = document.querySelector({json.dumps(css_selector)});
+                    if (!el) return {{visible: false, reason: 'not found'}};
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const visible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+                    return {{visible, tag: el.tagName, rect: {{x: rect.x, y: rect.y, width: rect.width, height: rect.height}}}};
+                }})()
+                """
+            else:
+                js = f"""
+                (() => {{
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                    let el;
+                    while (el = walker.nextNode()) {{
+                        if ((el.innerText || el.textContent || '').trim().includes({json.dumps(target_text)})) {{
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            const visible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+                            return {{visible, tag: el.tagName, rect: {{x: rect.x, y: rect.y, width: rect.width, height: rect.height}}}};
+                        }}
+                    }}
+                    return {{visible: false, reason: 'not found'}};
+                }})()
+                """
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict):
+                visible = result_value.get("visible", False)
+                return ToolResult(
+                    output=f"Visible: {visible}",
+                    details=result_value,
+                )
+            return ToolResult(output="is_visible returned unexpected format", is_error=True)
+        except Exception as exc:
+            return ToolResult(output=f"is_visible failed: {exc}", is_error=True)
 
     async def _do_visual_locate(self, inp: dict[str, Any]) -> ToolResult:
         """Find an element on the page by visual template matching using OpenCV."""
