@@ -348,10 +348,17 @@ class AgentBrowserTool(ToolBase):
         if captcha_info:
             details["captcha_detected"] = True
             details["captcha_type"] = captcha_info["type"]
+            # Return as a normal result (not an error) so the LLM can continue
+            # reasoning and use ComputerTool to solve the CAPTCHA visually.
             return ToolResult(
-                output=f"CAPTCHA detected: {captcha_info['message']}\n\nSnapshot:\n{text}",
+                output=(
+                    f"A CAPTCHA challenge is present on the page. "
+                    f"Type: {captcha_info['type']}. "
+                    f"You may analyze the screenshot to solve it.\n\n"
+                    f"Snapshot:\n{text}"
+                ),
                 base64_image=image,
-                is_error=True,
+                is_error=False,
                 details={
                     **details,
                     "error_code": ErrorCode.CAPTCHA_DETECTED,

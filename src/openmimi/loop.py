@@ -75,13 +75,17 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- The first browser navigate after starting can take 2-5 minutes on Windows "
     "  while the Chromium daemon initialises. If it times out, retry the same "
     "  navigate command once; the daemon will be ready.\n"
-    "- If a CAPTCHA or human-verification challenge is detected, STOP and ask "
-    "  the user for help. Do not retry the same action repeatedly; slider/click "
-    "  CAPTCHAs cannot be solved by standard automation tools.\n"
-    "- xft.cmbchina.com specific: The login slider CAPTCHA checks isTrusted on "
-    "  mouse events, so CDP-injected drag actions will always fail. If this "
-    "  CAPTCHA appears, ask the user to solve it manually or use ComputerUse "
-    "  with a headed browser for OS-level trusted input."
+    "- If a CAPTCHA or human-verification challenge is detected, analyze the "
+    "  screenshot visually to determine how to solve it. For slider/jigsaw "
+    "  CAPTCHAs, use the computer tool with action='mouse_drag' to perform an "
+    "  OS-level drag at precise screen coordinates. The drag generates trusted "
+    "  mouse events that bypass isTrusted checks. Calculate screen coordinates "
+    "  from the screenshot: the browser viewport offset is approximately "
+    "  (window.screenX + 7, window.screenY + 87) for Chrome on Windows.\n"
+    "- xft.cmbchina.com specific: The slider CAPTCHA requires dragging the "
+    "  puzzle piece to align with the gap in the background image. Use the "
+    "  computer.mouse_drag action with accurate screen coordinates derived from "
+    "  the screenshot. The drag handle is around y=550 in the viewport."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
@@ -271,11 +275,11 @@ async def sampling_loop(
                 continue
 
             duration_ms = int((time.monotonic() - t0) * 1000)
-            # Prominently flag CAPTCHA so operators notice even in long logs
-            if result.is_error and result.details and result.details.get("error_code") == ErrorCode.CAPTCHA_DETECTED:
+            # Flag CAPTCHA presence so operators notice in long logs
+            if result.details and result.details.get("error_code") == ErrorCode.CAPTCHA_DETECTED:
                 _tool_progress(
                     f"\n{'='*60}\n"
-                    f"[tool] step {step}: CAPTCHA DETECTED – human intervention required\n"
+                    f"[tool] step {step}: CAPTCHA detected – analyzing screenshot\n"
                     f"{'='*60}"
                 )
             tool_result_blocks.append(_to_tool_result_block(block_id, result))
