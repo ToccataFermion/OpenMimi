@@ -86,6 +86,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- Use action='wait_for' with ref or target_text when SPA content loads lazily "
     "  (e.g., after clicking a tab or submitting a form). This polls until the element "
     "  appears, avoiding brittle sleep calls.\n"
+    "- Use action='wait_for_disappear' with ref or target_text to wait until a loading spinner, "
+    "  CAPTCHA modal, or overlay disappears from the page.\n"
     "- Use action='get_box' with ref or target_text to get an element's exact "
     "  viewport coordinates (x, y, width, height). This is essential for computing "
     "  screen coordinates before OS-level mouse actions like computer.mouse_drag.\n"

@@ -63,6 +63,8 @@ _TOOL_DESCRIPTION = (
     "or when DOM selectors are unreliable.\n"
     "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
+    "wait_for_disappear: action='wait_for_disappear' with 'ref', 'target_text', or 'text' waits until "
+    "the element or text is no longer present (useful for loading spinners, CAPTCHA modals, overlays). "
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
     "intercepts fetch/XHR requests and captures response status codes and bodies to discover hidden API endpoints. "
     "Network modification: action='network_modify' with 'modify_action' can inject headers, "
@@ -451,6 +453,7 @@ class AgentBrowserTool(ToolBase):
                             "get_box",
                             "visual_locate",
                             "wait_for",
+                            "wait_for_disappear",
                             "network_log",
                             "network_modify",
                             "storage",
@@ -770,6 +773,7 @@ class AgentBrowserTool(ToolBase):
             "get_box": self._do_get_box,
             "visual_locate": self._do_visual_locate,
             "wait_for": self._do_wait_for,
+            "wait_for_disappear": self._do_wait_for_disappear,
             "network_log": self._do_network_log,
             "network_modify": self._do_network_modify,
             "storage": self._do_storage,
@@ -2081,6 +2085,53 @@ class AgentBrowserTool(ToolBase):
 
         return ToolResult(
             output=f"wait_for timed out after {timeout_ms}ms: {selector or text}",
+            is_error=True,
+        )
+
+    async def _do_wait_for_disappear(self, inp: dict[str, Any]) -> ToolResult:
+        """Wait for an element or text to disappear from the page."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        text = inp.get("text", "")
+        timeout_ms = inp.get("timeout_ms", 10000)
+        interval_ms = inp.get("interval_ms", 500)
+        selector = ref or target_text
+
+        if not selector and not text:
+            return ToolResult(
+                output="wait_for_disappear requires 'ref', 'target_text', or 'text'", is_error=True
+            )
+
+        start = time.monotonic()
+        while (time.monotonic() - start) * 1000 < timeout_ms:
+            try:
+                found = False
+                if selector:
+                    result = await self._exec("get", "box", selector, "--json")
+                    data = self._parse_data(result.stdout)
+                    box = data.get("box") if isinstance(data, dict) else None
+                    if box:
+                        found = True
+                if text:
+                    snapshot = await self._exec("snapshot", "--json")
+                    snap_text, _ = self._parse_snapshot(snapshot.stdout)
+                    if text in snap_text:
+                        found = True
+                if not found:
+                    return ToolResult(
+                        output=f"Element/text disappeared: {selector or text}",
+                        details={"selector": selector, "text": text},
+                    )
+            except Exception:
+                # If get/snapshot fails, assume the element is gone
+                return ToolResult(
+                    output=f"Element/text disappeared (page error): {selector or text}",
+                    details={"selector": selector, "text": text},
+                )
+            await asyncio.sleep(interval_ms / 1000.0)
+
+        return ToolResult(
+            output=f"wait_for_disappear timed out after {timeout_ms}ms: {selector or text} is still present",
             is_error=True,
         )
 
