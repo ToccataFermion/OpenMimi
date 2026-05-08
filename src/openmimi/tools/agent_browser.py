@@ -2321,6 +2321,32 @@ class AgentBrowserTool(ToolBase):
                 fallback_js = f"(() => {{ document.cookie = {json.dumps(key)}; return {{ok: true}}; }})()"
                 return await self._try_cdp_then_fallback(cdp_js, fallback_js, "cookies", storage_action, key)
 
+            if storage_action == "delete":
+                if not key:
+                    return ToolResult(output="cookie delete requires 'storage_key' (cookie name)", is_error=True)
+                cdp_js = f"""
+                (async () => {{
+                    try {{
+                        const name = {json.dumps(key)};
+                        await window.__openmimi_cdp_send('Network.deleteCookies', {{
+                            name: name,
+                            url: window.location.href,
+                        }});
+                        return {{ok: true, method: 'cdp', deleted: name}};
+                    }} catch (e) {{
+                        return {{error: e.message, method: 'cdp_failed'}};
+                    }}
+                }})()
+                """
+                fallback_js = f"""
+                (() => {{
+                    const name = {json.dumps(key)};
+                    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+                    return {{ok: true, method: 'js_fallback', deleted: name}};
+                }})()
+                """
+                return await self._try_cdp_then_fallback(cdp_js, fallback_js, "cookies", storage_action, key)
+
             if storage_action == "clear":
                 cdp_js = """
                 (async () => {
