@@ -224,15 +224,20 @@ def replay(session_id: str) -> None:
 
 
 def _maybe_load_dotenv() -> None:
-    """Best-effort load of .env in the current working directory.
+    """Best-effort load of .env from user config dir, then current directory.
 
+    Precedence: ~/.openmimi/.env (global) < ./.env (local override).
     The dotenv dependency is already required by the project; if it's missing
     or the file does not exist we simply skip the call.
     """
     try:
+        from pathlib import Path
         from dotenv import load_dotenv
 
-        load_dotenv()
+        global_env = Path.home() / ".openmimi" / ".env"
+        if global_env.exists():
+            load_dotenv(dotenv_path=global_env, override=False)
+        load_dotenv(override=True)
     except Exception:
         pass
 
