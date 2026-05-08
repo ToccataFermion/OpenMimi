@@ -56,6 +56,11 @@ async def click_login_button(browser: AgentBrowserTool) -> bool:
 
 async def fill_credentials(browser: AgentBrowserTool) -> bool:
     log("Filling credentials...")
+    phone_num = os.environ.get('XFT_PHONE', '')
+    password = os.environ.get('XFT_PASSWORD', '')
+    if not phone_num or not password:
+        log("ERROR: XFT_PHONE and XFT_PASSWORD environment variables must be set")
+        return False
     result = await browser({
         "action": "eval",
         "js": f"""
@@ -70,8 +75,8 @@ async def fill_credentials(browser: AgentBrowserTool) -> bool:
                     element.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     element.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
-                const phoneNum = '{os.environ.get('XFT_PHONE', '18584828398')}';
-                const password = '{os.environ.get('XFT_PASSWORD', 'Liszt123')}';
+                const phoneNum = '{phone_num}';
+                const password = '{password}';
                 if (phone) setReactValue(phone, phoneNum);
                 if (pass) setReactValue(pass, password);
                 if (checkbox && !checkbox.checked) checkbox.click();

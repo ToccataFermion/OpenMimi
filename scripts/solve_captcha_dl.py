@@ -48,8 +48,11 @@ async def login_flow(browser: AgentBrowserTool) -> bool:
         return False
 
     log("=== Fill Form ===")
-    phone_num = os.environ.get('XFT_PHONE', '18584828398')
-    password = os.environ.get('XFT_PASSWORD', 'Liszt123')
+    phone_num = os.environ.get('XFT_PHONE', '')
+    password = os.environ.get('XFT_PASSWORD', '')
+    if not phone_num or not password:
+        print("ERROR: XFT_PHONE and XFT_PASSWORD environment variables must be set", file=sys.stderr)
+        return False
     await browser({
         "action": "eval",
         "js": f"""

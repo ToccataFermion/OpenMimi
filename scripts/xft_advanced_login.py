@@ -126,9 +126,8 @@ async def fill_login_form(browser: AgentBrowserTool) -> bool:
     phone_num = os.environ.get('XFT_PHONE', '')
     password = os.environ.get('XFT_PASSWORD', '')
     if not phone_num or not password:
-        log("WARNING: XFT_PHONE and XFT_PASSWORD environment variables not set")
-        phone_num = '18584828398'
-        password = 'Liszt123'
+        log("ERROR: XFT_PHONE and XFT_PASSWORD environment variables must be set")
+        return False
 
     result = await browser({
         "action": "eval",
