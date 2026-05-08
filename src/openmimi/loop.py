@@ -153,6 +153,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- agent_browser clear_cache: wipe cookies, localStorage, and sessionStorage to reset state.\n"
     "- agent_browser scroll_into_view: bring an element into the viewport before interacting with it.\n"
     "- agent_browser page_source: retrieve raw HTML for parsing or debugging.\n"
+    "- agent_browser get_url: return the current page URL without eval.\n"
+    "- agent_browser get_title: return the current page title without eval.\n"
     "- agent_browser wait_for_navigation: wait for URL change after click/form submit (SPA-friendly).\n"
     "- agent_browser wait_for_network_idle: wait until no active fetch/XHR requests for a duration. "
     "  Use this after SPA navigation or clicks that trigger async data loading.\n"

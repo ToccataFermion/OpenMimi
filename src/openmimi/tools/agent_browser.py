@@ -51,6 +51,8 @@ _TOOL_DESCRIPTION = (
     "before OS-level mouse actions like computer.mouse_drag on CAPTCHAs). "
     "Scroll into view: action='scroll_into_view' with 'ref' or 'target_text' brings an element into the viewport. "
     "Page source: action='page_source' returns the raw HTML of the current page. "
+    "Get URL: action='get_url' returns the current page URL. "
+    "Get title: action='get_title' returns the current page title. "
     "Wait for navigation: action='wait_for_navigation' waits for the URL to change after a click or form submission. "
     "Wait for network idle: action='wait_for_network_idle' waits until no fetch/XHR requests are active for idle_duration_ms (default 2000). "
     "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
@@ -416,6 +418,8 @@ class AgentBrowserTool(ToolBase):
                             "load_session",
                             "scroll_into_view",
                             "page_source",
+                            "get_url",
+                            "get_title",
                             "wait_for_navigation",
                             "wait_for_network_idle",
                             "emulate_device",
@@ -731,6 +735,8 @@ class AgentBrowserTool(ToolBase):
             "load_session": self._do_load_session,
             "scroll_into_view": self._do_scroll_into_view,
             "page_source": self._do_page_source,
+            "get_url": self._do_get_url,
+            "get_title": self._do_get_title,
             "wait_for_navigation": self._do_wait_for_navigation,
             "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
@@ -1259,6 +1265,26 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"page_source error: {exc}", is_error=True)
+
+    async def _do_get_url(self, _inp: dict[str, Any]) -> ToolResult:
+        """Return the current page URL."""
+        try:
+            result = await self._exec("eval", "(() => window.location.href)()", "--json")
+            data = self._parse_data(result.stdout)
+            url = data.get("result") if isinstance(data, dict) else ""
+            return ToolResult(output=url, details={"url": url})
+        except Exception as exc:
+            return ToolResult(output=f"get_url error: {exc}", is_error=True)
+
+    async def _do_get_title(self, _inp: dict[str, Any]) -> ToolResult:
+        """Return the current page title."""
+        try:
+            result = await self._exec("eval", "(() => document.title)()", "--json")
+            data = self._parse_data(result.stdout)
+            title = data.get("result") if isinstance(data, dict) else ""
+            return ToolResult(output=title, details={"title": title})
+        except Exception as exc:
+            return ToolResult(output=f"get_title error: {exc}", is_error=True)
 
     async def _do_wait_for_navigation(self, inp: dict[str, Any]) -> ToolResult:
         """Wait for the page URL to change, indicating navigation has occurred."""
