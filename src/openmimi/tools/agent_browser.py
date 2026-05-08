@@ -46,6 +46,10 @@ _TOOL_DESCRIPTION = (
     "cannot handle, such as dragging sliders, drawing, or any press-and-hold gesture. "
     "Window focus: action='focus' brings the browser window to the foreground (useful "
     "before OS-level mouse actions like computer.mouse_drag on CAPTCHAs). "
+    "Element coordinates: action='get_box' with 'ref' or 'target_text' returns the "
+    "element's bounding box (x, y, width, height) for OS-level mouse coordination. "
+    "Dynamic content: action='wait_for' with 'ref', 'target_text', or 'text' waits until "
+    "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -149,6 +153,8 @@ class AgentBrowserTool(ToolBase):
                             "mouse",
                             "focus",
                             "clipboard",
+                            "get_box",
+                            "wait_for",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -254,6 +260,18 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "Local file path for action='upload' or target path for action='download'.",
                     },
+                    "text": {
+                        "type": "string",
+                        "description": "Text to wait for on the page (action='wait_for').",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Timeout in milliseconds for wait_for (default 10000).",
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Polling interval in milliseconds for wait_for (default 500).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -317,6 +335,8 @@ class AgentBrowserTool(ToolBase):
             "mouse": self._do_mouse,
             "focus": self._do_focus,
             "clipboard": self._do_clipboard,
+            "get_box": self._do_get_box,
+            "wait_for": self._do_wait_for,
         }
         handler = handlers.get(action)
         if not handler:
@@ -859,6 +879,72 @@ class AgentBrowserTool(ToolBase):
                 is_error=True,
             )
         return ToolResult(output=f"Browser window focused: {wt}")
+
+    async def _do_get_box(self, inp: dict[str, Any]) -> ToolResult:
+        """Return the bounding box of an element for OS-level mouse coordination."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="get_box requires 'ref' or 'target_text'", is_error=True)
+        try:
+            result = await self._exec("get", "box", selector, "--json")
+            data = self._parse_data(result.stdout)
+            box = data.get("box") if isinstance(data, dict) else None
+            if not box:
+                return ToolResult(
+                    output=f"Could not get box for {selector}", is_error=True
+                )
+            return ToolResult(
+                output=json.dumps(box, ensure_ascii=False, indent=2),
+                details={"box": box, "selector": selector},
+            )
+        except Exception as exc:
+            return ToolResult(
+                output=f"get_box failed for {selector}: {exc}", is_error=True
+            )
+
+    async def _do_wait_for(self, inp: dict[str, Any]) -> ToolResult:
+        """Wait for an element or text to appear on the page."""
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        text = inp.get("text", "")
+        timeout_ms = inp.get("timeout_ms", 10000)
+        interval_ms = inp.get("interval_ms", 500)
+        selector = ref or target_text
+
+        if not selector and not text:
+            return ToolResult(
+                output="wait_for requires 'ref', 'target_text', or 'text'", is_error=True
+            )
+
+        start = time.monotonic()
+        while (time.monotonic() - start) * 1000 < timeout_ms:
+            try:
+                if selector:
+                    result = await self._exec("get", "box", selector, "--json")
+                    data = self._parse_data(result.stdout)
+                    box = data.get("box") if isinstance(data, dict) else None
+                    if box:
+                        return ToolResult(
+                            output=f"Element found: {selector}",
+                            details={"box": box, "selector": selector},
+                        )
+                if text:
+                    snapshot = await self._exec("snapshot", "--json")
+                    snap_text, _ = self._parse_snapshot(snapshot.stdout)
+                    if text in snap_text:
+                        return ToolResult(
+                            output=f"Text found: {text}",
+                        )
+            except Exception:
+                pass
+            await asyncio.sleep(interval_ms / 1000.0)
+
+        return ToolResult(
+            output=f"wait_for timed out after {timeout_ms}ms: {selector or text}",
+            is_error=True,
+        )
 
     async def _do_close(self) -> ToolResult:
         if self._started:
