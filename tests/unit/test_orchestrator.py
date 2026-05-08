@@ -134,6 +134,8 @@ async def test_close_calls_close_all(tmp_path: Path) -> None:
 
 
 def test_from_env_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(RuntimeError) as exc:
         Orchestrator.from_env()
@@ -143,6 +145,8 @@ def test_from_env_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_from_env_uses_base_url_and_model_overrides(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com/v1")
     monkeypatch.setenv("ANTHROPIC_MODEL", "qwen-x")
@@ -179,6 +183,8 @@ def test_from_env_uses_base_url_and_model_overrides(
 def test_from_env_reads_llm_timeout_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("OPENMIMI_LLM_TIMEOUT_S", "12.5")
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
@@ -247,6 +253,8 @@ async def test_run_chat_turn_keeps_tools_open_across_turns(
 def test_from_env_falls_back_when_timeout_invalid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("OPENMIMI_LLM_TIMEOUT_S", "not-a-number")
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)

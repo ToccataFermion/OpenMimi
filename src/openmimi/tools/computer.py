@@ -22,6 +22,7 @@ import sys
 import time
 from typing import Any
 
+from ..utils.env_flags import screenshots_disabled
 from .base import ToolBase
 from .result import ToolResult
 
@@ -442,6 +443,11 @@ class ComputerTool(ToolBase):
     # ------------------------------------------------------------------ #
 
     async def _do_screenshot(self, _inp: dict[str, Any]) -> ToolResult:
+        if screenshots_disabled():
+            return ToolResult(
+                output="Screenshots disabled (OPENMIMI_DISABLE_SCREENSHOTS).",
+                base64_image=None,
+            )
         sct = self._ensure_mss()
         # monitors[0] is the virtual screen (all monitors); monitors[1] is the
         # primary display.  We capture the primary display so that coordinates

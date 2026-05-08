@@ -37,6 +37,7 @@ from .browser_schema import (
     WaitInput,
     browser_tool_input_json_schema,
 )
+from ..utils.env_flags import screenshots_disabled
 from .errors import ErrorCode
 from .result import ToolResult
 
@@ -303,7 +304,11 @@ class BrowserTool(ToolBase):
                         page, validated, ids_before=ids_before
                     )
                 elif isinstance(validated, ScreenshotInput):
-                    output = "Captured screenshot."
+                    output = (
+                        "Screenshots disabled (OPENMIMI_DISABLE_SCREENSHOTS)."
+                        if screenshots_disabled()
+                        else "Captured screenshot."
+                    )
                 elif isinstance(validated, WaitInput):
                     output = await self._handle_wait(validated)
                 elif isinstance(validated, PressInput):
@@ -908,6 +913,8 @@ class BrowserTool(ToolBase):
     # ----- screenshot / details --------------------------------------------
 
     async def _safe_screenshot(self, page: Any | None) -> str | None:
+        if screenshots_disabled():
+            return None
         if page is None:
             return None
         try:

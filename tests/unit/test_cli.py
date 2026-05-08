@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,16 @@ from typer.testing import CliRunner
 from openmimi.cli import app
 
 runner = CliRunner()
+
+
+def test_run_no_screenshots_sets_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENMIMI_DISABLE_SCREENSHOTS", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("openmimi.cli._maybe_load_dotenv", lambda: None)
+
+    result = runner.invoke(app, ["run", "--no-screenshots", "do something"])
+    assert result.exit_code == 2
+    assert os.environ.get("OPENMIMI_DISABLE_SCREENSHOTS") == "1"
 
 
 def test_run_without_api_key_exits_with_error(

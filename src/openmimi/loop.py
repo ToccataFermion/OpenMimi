@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import sys
 import time
@@ -27,6 +28,8 @@ from .llm.base import LLMClient
 from .tools.collection import ToolCollection
 from .tools.errors import ErrorCode
 from .tools.result import ToolResult
+
+_log = logging.getLogger(__name__)
 
 
 class AuditSink(Protocol):
@@ -206,7 +209,7 @@ async def sampling_loop(
     audit: AuditSink | None = None,
     system: str = _DEFAULT_SYSTEM_PROMPT,
     max_turns: int = 30,
-    only_n_most_recent_images: int = 4,
+    only_n_most_recent_images: int = 2,
     max_tokens: int = 4096,
 ) -> list[dict[str, Any]]:
     """Run the LLM-driven tool_use loop.
@@ -513,6 +516,11 @@ def _trim_old_images(messages: list[dict[str, Any]], keep_n: int) -> None:
         return
 
     n_to_drop = len(image_locations) - keep_n
+    _log.warning(
+        "trimming %d older screenshot(s) from context; keeping last %d (only_n_most_recent_images)",
+        n_to_drop,
+        keep_n,
+    )
     for parent, idx in image_locations[:n_to_drop]:
         parent[idx] = {"type": "text", "text": _OMITTED_IMAGE_PLACEHOLDER}
 

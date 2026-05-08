@@ -30,4 +30,4 @@ class AppConfig(BaseModel):
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     max_turns: int = 50
-    only_n_most_recent_images: int = 4
+    only_n_most_recent_images: int = 2

@@ -16,7 +16,7 @@ from typing import Any
 from .audit import JsonlAuditLogger
 from .config import load_config
 from .config.schema import AppConfig
-from .llm import AnthropicClient
+from .llm import AnthropicClient, OpenAIChatClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
@@ -51,9 +51,15 @@ class Orchestrator:
         """Build an Orchestrator from `AppConfig` + env vars.
 
         Recognised env vars:
-          - <cfg.llm.api_key_env>     (default ANTHROPIC_API_KEY) - required
-          - ANTHROPIC_BASE_URL        - optional, points at a compatible proxy
+          - OPENMIMI_LLM_PROVIDER     - ``anthropic`` (default) or ``openai``
+          - <cfg.llm.api_key_env>     (default ANTHROPIC_API_KEY) - required for
+                                        Anthropic provider
+          - ANTHROPIC_BASE_URL        - optional (Anthropic provider)
           - ANTHROPIC_MODEL           - optional, overrides cfg.llm.model
+          - OPENAI_API_KEY            - required for OpenAI provider
+          - OPENAI_BASE_URL           - optional; for OpenAI-compatible gateways
+                                        (e.g. Alibaba compatible-mode)
+          - OPENAI_MODEL              - optional; defaults to ANTHROPIC_MODEL then cfg.llm.model
           - OPENMIMI_LLM_TIMEOUT_S    - optional, per-LLM-request timeout
                                         in seconds (default 90)
 
@@ -67,28 +73,52 @@ class Orchestrator:
         manifesting as a frozen process.
         """
         cfg = config or load_config()
-        api_key = os.environ.get(cfg.llm.api_key_env)
-        if not api_key:
-            raise RuntimeError(
-                f"missing env var {cfg.llm.api_key_env!r}; "
-                "set it in .env or your shell before running"
-            )
-
-        base_url = os.environ.get("ANTHROPIC_BASE_URL") or None
-        model = os.environ.get("ANTHROPIC_MODEL") or cfg.llm.model
-        enable_caching = base_url is None
+        provider = (
+            os.environ.get("OPENMIMI_LLM_PROVIDER") or cfg.llm.provider or "anthropic"
+        ).strip().lower()
         timeout_s = _coerce_positive_float(
             os.environ.get("OPENMIMI_LLM_TIMEOUT_S"), _DEFAULT_LLM_TIMEOUT_S
         )
 
-        llm = AnthropicClient(
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            enable_prompt_caching=enable_caching,
-            request_timeout_s=timeout_s,
-            progress_logger=_stderr_progress_logger,
-        )
+        if provider == "openai":
+            api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+            if not api_key:
+                raise RuntimeError(
+                    "missing env var 'OPENAI_API_KEY'; set it in .env or your shell before running"
+                )
+            base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or None
+            model = (
+                (os.environ.get("OPENAI_MODEL") or "").strip()
+                or (os.environ.get("ANTHROPIC_MODEL") or "").strip()
+                or cfg.llm.model
+            )
+            llm: LLMClient = OpenAIChatClient(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                request_timeout_s=timeout_s,
+                progress_logger=_stderr_progress_logger,
+            )
+        else:
+            api_key = os.environ.get(cfg.llm.api_key_env)
+            if not api_key:
+                raise RuntimeError(
+                    f"missing env var {cfg.llm.api_key_env!r}; "
+                    "set it in .env or your shell before running"
+                )
+
+            base_url = os.environ.get("ANTHROPIC_BASE_URL") or None
+            model = os.environ.get("ANTHROPIC_MODEL") or cfg.llm.model
+            enable_caching = base_url is None
+
+            llm = AnthropicClient(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                enable_prompt_caching=enable_caching,
+                request_timeout_s=timeout_s,
+                progress_logger=_stderr_progress_logger,
+            )
 
         tools = ToolCollection()
         browser_args = cfg.browser.args or []
@@ -236,7 +266,7 @@ class Orchestrator:
 
 
 def _stderr_progress_logger(message: str) -> None:
-    """Best-effort stderr progress sink for AnthropicClient.
+    """Best-effort stderr progress sink for LLM clients.
 
     Wrapped in try/except inside `_log_progress`, so a closed/broken stderr
     can never break the LLM call path.
