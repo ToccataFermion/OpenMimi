@@ -219,5 +219,61 @@ def _maybe_load_dotenv() -> None:
         pass
 
 
+def chat_main() -> None:
+    """Short-cut entry point: `mimi` starts chat REPL directly."""
+    _polish_console_io()
+    _maybe_load_dotenv()
+    from .orchestrator import Orchestrator
+
+    try:
+        orch = Orchestrator.from_env()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    from .utils.ids import new_session_id
+
+    async def _runner() -> None:
+        session_id = new_session_id()
+        messages: list[dict[str, Any]] = []
+        print(
+            f"多轮对话（同一浏览器与 session，审计写入同一 jsonl）\n"
+            f"session={session_id}\n"
+            f"退出：/exit、/quit 或 Ctrl+C（会关闭浏览器）\n"
+        )
+        try:
+            while True:
+                try:
+                    raw = await asyncio.to_thread(_read_chat_line, "> ")
+                except EOFError:
+                    break
+                line = raw.strip()
+                if not line:
+                    continue
+                lower = line.lower()
+                if lower in ("/exit", "/quit", "exit", "quit"):
+                    break
+                try:
+                    reply = await orch.run_chat_turn(
+                        messages=messages,
+                        session_id=session_id,
+                        user_content=line,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    print(f"\n[error] {exc}", file=sys.stderr)
+                    continue
+                print(f"\n{reply}\n")
+        finally:
+            await orch.close()
+
+    try:
+        asyncio.run(_runner())
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        sys.exit(130)
+
+
 if __name__ == "__main__":
     app()

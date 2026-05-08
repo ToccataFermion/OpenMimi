@@ -27,6 +27,14 @@ LLM <-> sampling_loop <-> ToolCollection
 ```bash
 pip install -e .
 
+# Start multi-turn chat REPL (shortest command)
+mimi
+
+# Or use the full CLI
+openmimi chat          # Multi-turn REPL
+openmimi run "task"    # Single task execution
+openmimi replay <id>   # Replay a session
+
 # Set credentials for xft demo (optional)
 export XFT_PHONE="your_phone"
 export XFT_PASSWORD="your_password"

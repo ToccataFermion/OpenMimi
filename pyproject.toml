@@ -34,6 +34,7 @@ dev = [
 
 [project.scripts]
 openmimi = "openmimi.cli:app"
+mimi = "openmimi.cli:chat_main"
 
 [project.urls]
 Homepage = "https://github.com/ToccataFermion/OpenMimi"
