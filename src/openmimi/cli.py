@@ -115,12 +115,11 @@ def _mimi_version() -> str:
 
 def _print_welcome(session_id: str) -> None:
     ver = _mimi_version()
-    logo = rf"""
-    /\_____/\
-   /  o   o  \    OpenMimi  v{ver}
-  (    >.<    )   Local Windows AI Agent
-   \  \___/  /
-    \_______/
+    logo = f"""
+   /\_/\     ╔══════════════════════════════════╗
+  ( o.o )    ║  OpenMimi  v{ver}                ║
+   > ^ <     ║  Local Windows AI Agent          ║
+             ╚══════════════════════════════════╝
 """
     print(logo)
     print(f"  session : {session_id}")
