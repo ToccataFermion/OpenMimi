@@ -60,7 +60,7 @@ _TOOL_DESCRIPTION = (
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
     "intercepts fetch/XHR requests and captures response status codes and bodies to discover hidden API endpoints. "
     "Network modification: action='network_modify' with 'modify_action' can inject headers, "
-    "block URLs by pattern, mock responses, or override User-Agent. Use this to bypass "
+    "block URLs by pattern, mock responses (fetch + XHR), or override User-Agent. Use this to bypass "
     "anti-bot detection or inject auth tokens into API requests. "
     "Extract: action='extract' with 'instruction' retrieves structured data: 'get text', "
     "'headings', 'links', 'forms', 'tables', 'metadata', 'images'.\n"
@@ -2045,6 +2045,32 @@ class AgentBrowserTool(ToolBase):
                         }}
                     }}
                     return window.__openmimi_orig_fetch(resource, init);
+                }};
+                if (!window.__openmimi_orig_xhr_open) {{
+                    window.__openmimi_orig_xhr_open = window.XMLHttpRequest.prototype.open;
+                    window.__openmimi_orig_xhr_send = window.XMLHttpRequest.prototype.send;
+                }}
+                window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+                    this._om_method = method;
+                    this._om_url = url;
+                    return window.__openmimi_orig_xhr_open.call(this, method, url, ...rest);
+                }};
+                window.XMLHttpRequest.prototype.send = function(body) {{
+                    for (const p of patterns) {{
+                        if (this._om_url && this._om_url.includes(p)) {{
+                            this.status = mock.status || 200;
+                            this.statusText = 'OK';
+                            this.responseText = mock.body || '';
+                            this.readyState = 4;
+                            const self = this;
+                            setTimeout(() => {{
+                                self.dispatchEvent(new Event('load'));
+                                self.dispatchEvent(new Event('loadend'));
+                            }}, 0);
+                            return;
+                        }}
+                    }}
+                    return window.__openmimi_orig_xhr_send.call(this, body);
                 }};
                 return {{ok: true, patterns, mock}};
             }})()
