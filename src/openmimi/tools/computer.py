@@ -288,7 +288,10 @@ class ComputerTool(ToolBase):
 
     async def _do_screenshot(self, _inp: dict[str, Any]) -> ToolResult:
         sct = self._ensure_mss()
-        raw = sct.grab(sct.monitors[0])  # entire virtual screen
+        # monitors[0] is the virtual screen (all monitors); monitors[1] is the
+        # primary display.  We capture the primary display so that coordinates
+        # derived from the screenshot map 1:1 to mouse_move/mouse_drag.
+        raw = sct.grab(sct.monitors[1])
         import mss.tools
         png_bytes = mss.tools.to_png(raw.rgb, raw.size)
         b64 = base64.b64encode(png_bytes).decode("ascii")
@@ -367,8 +370,9 @@ class ComputerTool(ToolBase):
     async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
         """Drag from (x,y) to (end_x,end_y) with optional bezier smoothing."""
         import random
-        start_x = inp.get("x", 0)
-        start_y = inp.get("y", 0)
+        # Accept both (x,y) and (start_x,start_y) for the start point
+        start_x = inp.get("x") if "x" in inp else inp.get("start_x", 0)
+        start_y = inp.get("y") if "y" in inp else inp.get("start_y", 0)
         end_x = inp.get("end_x", start_x)
         end_y = inp.get("end_y", start_y)
         button = inp.get("button", "left")
