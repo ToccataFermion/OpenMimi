@@ -198,6 +198,7 @@ class Orchestrator:
                 audit=self.audit,
                 max_turns=self.config.max_turns,
                 only_n_most_recent_images=self.config.only_n_most_recent_images,
+                max_context_turns=self.config.max_context_turns,
                 system=system,
             )
         finally:
@@ -275,6 +276,7 @@ class Orchestrator:
             audit=self.audit,
             max_turns=self.config.max_turns,
             only_n_most_recent_images=self.config.only_n_most_recent_images,
+            max_context_turns=self.config.max_context_turns,
             system=system,
         )
         return _extract_last_assistant_text(messages)

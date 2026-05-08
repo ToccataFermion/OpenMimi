@@ -31,3 +31,4 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     max_turns: int = 50
     only_n_most_recent_images: int = 2
+    max_context_turns: int = 10  # keep this many recent turns intact; truncate older tool results

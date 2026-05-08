@@ -81,6 +81,7 @@ Browser best practices:
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
 _OMITTED_IMAGE_PLACEHOLDER = "[image omitted to save context]"
+_TRUNCATED_TEXT_SUFFIX = "\n... [truncated to save context]"
 _DEFAULT_TOOL_TIMEOUT_S = 300.0
 
 
@@ -128,6 +129,7 @@ async def sampling_loop(
     system: str = _DEFAULT_SYSTEM_PROMPT,
     max_turns: int = 30,
     only_n_most_recent_images: int = 2,
+    max_context_turns: int = 10,
     max_tokens: int = 4096,
 ) -> list[dict[str, Any]]:
     """Run the LLM-driven tool_use loop.
@@ -320,6 +322,7 @@ async def sampling_loop(
 
         messages.append({"role": "user", "content": tool_result_blocks})
         _trim_old_images(messages, only_n_most_recent_images)
+        _compress_old_tool_results(messages, max_context_turns=max_context_turns)
 
     return messages
 
@@ -460,6 +463,61 @@ def _trim_old_images(messages: list[dict[str, Any]], keep_n: int) -> None:
     )
     for parent, idx in image_locations[:n_to_drop]:
         parent[idx] = {"type": "text", "text": _OMITTED_IMAGE_PLACEHOLDER}
+
+
+def _compress_old_tool_results(
+    messages: list[dict[str, Any]],
+    max_context_turns: int = 10,
+    truncate_len: int = 400,
+) -> None:
+    """Truncate text in old tool_result blocks to prevent unbounded growth.
+
+    The first user message and the most recent ``max_context_turns``
+    (assistant + user pairs) are left untouched. Older turns have their
+    tool_result text shortened so the full action trail is preserved but
+    long HTML snapshots / error dumps don't eat the context window.
+    """
+    if max_context_turns < 0:
+        return
+
+    # messages[0] = initial user task
+    # each turn adds 2 messages: assistant + user(tool_results)
+    keep_count = 1 + max_context_turns * 2
+    if len(messages) <= keep_count:
+        return
+
+    cutoff_idx = len(messages) - keep_count
+    trimmed = 0
+
+    for msg in messages[1:cutoff_idx]:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            sub = block.get("content")
+            if not isinstance(sub, list):
+                continue
+            for item in sub:
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "text"
+                    and _TRUNCATED_TEXT_SUFFIX not in item.get("text", "")
+                ):
+                    text = item["text"]
+                    if len(text) > truncate_len:
+                        item["text"] = text[:truncate_len] + _TRUNCATED_TEXT_SUFFIX
+                        trimmed += 1
+
+    if trimmed:
+        _log.info(
+            "compressed %d old tool_result text block(s) (kept last %d turns)",
+            trimmed,
+            max_context_turns,
+        )
 
 
 def _dump_prompt(
