@@ -426,7 +426,12 @@ class ComputerTool(ToolBase):
         return ToolResult(output=f"Mouse {button} up")
 
     async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
-        """Drag from (x,y) to (end_x,end_y) with optional bezier smoothing."""
+        """Drag from (x,y) to (end_x,end_y) with human-like trajectory.
+
+        Uses ease-in-out velocity with micro-pauses and slight overshoot
+        to mimic real human mouse movement, which helps evade behavioral
+        biometrics detection on slider CAPTCHAs.
+        """
         import random
         # Accept both (x,y) and (start_x,start_y) for the start point
         start_x = inp.get("x") if "x" in inp else inp.get("start_x", 0)
@@ -442,17 +447,49 @@ class ComputerTool(ToolBase):
         # Mouse down
         await self._do_mouse_down({"button": button})
         time.sleep(0.05)
-        # Bezier control point with small random jitter
-        cx = (start_x + end_x) // 2 + random.randint(-30, 30)
-        cy = (start_y + end_y) // 2 + random.randint(-10, 10)
-        for i in range(1, steps + 1):
+
+        # Human-like trajectory generation
+        # Control point with random offset for curved path
+        cx = (start_x + end_x) // 2 + random.randint(-40, 40)
+        cy = (start_y + end_y) // 2 + random.randint(-15, 15)
+
+        # Slight overshoot target for realism, then correct back
+        overshoot = random.randint(3, 8)
+        overshoot_x = end_x + (overshoot if end_x >= start_x else -overshoot)
+        overshoot_y = end_y + random.randint(-3, 3)
+
+        # Generate points along quadratic bezier
+        points = []
+        for i in range(steps + 1):
             t = i / steps
-            bx = int((1 - t) ** 2 * start_x + 2 * (1 - t) * t * cx + t ** 2 * end_x)
-            by = int((1 - t) ** 2 * start_y + 2 * (1 - t) * t * cy + t ** 2 * end_y)
+            bx = int((1 - t) ** 2 * start_x + 2 * (1 - t) * t * cx + t ** 2 * overshoot_x)
+            by = int((1 - t) ** 2 * start_y + 2 * (1 - t) * t * cy + t ** 2 * overshoot_y)
+            points.append((bx, by))
+        # Correct overshoot in final steps
+        correct_steps = min(5, steps // 10)
+        if correct_steps > 0:
+            for i in range(correct_steps):
+                t = (i + 1) / (correct_steps + 1)
+                bx = int(points[-correct_steps - 1][0] + t * (end_x - points[-correct_steps - 1][0]))
+                by = int(points[-correct_steps - 1][1] + t * (end_y - points[-correct_steps - 1][1]))
+                points[-correct_steps + i] = (bx, by)
+            points[-1] = (end_x, end_y)
+
+        # Execute movement with ease-in-out timing (slower at start/end, faster in middle)
+        for i in range(1, len(points)):
+            bx, by = points[i]
             bx += random.randint(-1, 1)
             by += random.randint(-1, 1)
             await self._do_mouse_move({"x": bx, "y": by})
-            time.sleep(delay_ms / 1000)
+            # Ease-in-out delay: slower at boundaries, faster in middle
+            t = i / len(points)
+            ease = 1.0 - abs(2 * t - 1)  # 0 at start, 1 at middle, 0 at end
+            step_delay = delay_ms * (0.6 + 0.4 * (1 - ease))  # vary by ±40%
+            # Occasional micro-pause (5% chance)
+            if random.random() < 0.05:
+                step_delay += random.randint(20, 60)
+            time.sleep(step_delay / 1000)
+
         # Final position
         await self._do_mouse_move({"x": end_x, "y": end_y})
         time.sleep(0.05)
