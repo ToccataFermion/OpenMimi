@@ -49,7 +49,9 @@ _TOOL_DESCRIPTION = (
     "- list_windows: enumerate all visible windows with titles and positions\n"
     "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard\n"
     "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
-    "- file file_action=read|write file_path [file_content]: read from or write to a file on disk"
+    "- file file_action=read|write file_path [file_content]: read from or write to a file on disk.\n"
+    "- get_screen_info: return primary monitor resolution and DPI.\n"
+    "- shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )
 
 # Windows input constants
@@ -270,6 +272,8 @@ class ComputerTool(ToolBase):
                             "clipboard",
                             "launch",
                             "file",
+                            "get_screen_info",
+                            "shell",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -342,7 +346,7 @@ class ComputerTool(ToolBase):
                     },
                     "command": {
                         "type": "string",
-                        "description": "Command or executable path to launch (action='launch'). Can be a full path, an executable name, or a common alias like 'notepad', 'calc', 'chrome'.",
+                        "description": "Command or executable path to launch or execute (action='launch' or 'shell'). For launch: can be a full path, executable name, or alias like 'notepad', 'calc', 'chrome'. For shell: a shell command string to execute.",
                     },
                     "args": {
                         "type": "array",
@@ -399,6 +403,8 @@ class ComputerTool(ToolBase):
             "clipboard": self._do_clipboard,
             "launch": self._do_launch,
             "file": self._do_file,
+            "get_screen_info": self._do_get_screen_info,
+            "shell": self._do_shell,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -922,6 +928,60 @@ class ComputerTool(ToolBase):
                 # Fallback: use keybd_event for unmapped chars (simplified)
                 pass
         return ToolResult(output=f"Typed {len(text)} character(s)")
+
+    async def _do_get_screen_info(self, _inp: dict[str, Any]) -> ToolResult:
+        """Return primary screen resolution and DPI information."""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            width = user32.GetSystemMetrics(0)
+            height = user32.GetSystemMetrics(1)
+            # Try to get DPI
+            try:
+                dpi = user32.GetDpiForSystem()
+            except Exception:
+                dpi = 96
+            return ToolResult(
+                output=f"Screen: {width}x{height} @ {dpi} DPI",
+                details={"width": width, "height": height, "dpi": dpi},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"get_screen_info failed: {exc}", is_error=True)
+
+    async def _do_shell(self, inp: dict[str, Any]) -> ToolResult:
+        """Execute a shell command and return stdout/stderr."""
+        command = str(inp.get("command", "")).strip()
+        if not command:
+            return ToolResult(output="shell requires 'command'", is_error=True)
+        timeout = max(1, min(300, int(inp.get("timeout", 30))))
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                shell=True,
+            )
+            stdout = result.stdout[:4000] if result.stdout else ""
+            stderr = result.stderr[:2000] if result.stderr else ""
+            output_lines = []
+            if stdout:
+                output_lines.append(f"STDOUT:\n{stdout}")
+            if stderr:
+                output_lines.append(f"STDERR:\n{stderr}")
+            if not output_lines:
+                output_lines.append("(no output)")
+            output_lines.append(f"Exit code: {result.returncode}")
+            return ToolResult(
+                output="\n".join(output_lines),
+                details={"returncode": result.returncode, "command": command},
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(output=f"shell timed out after {timeout}s", is_error=True)
+        except Exception as exc:
+            return ToolResult(output=f"shell error: {exc}", is_error=True)
 
     # ------------------------------------------------------------------ #
     #  Low-level helpers

@@ -138,7 +138,9 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
     "- computer clipboard: read from or write to the system clipboard.\n"
     "- computer launch: start applications by name or path (e.g., command='notepad', command='chrome').\n"
-    "- computer file: read from or write to files on disk (file_action='read'/'write', file_path, file_content)."
+    "- computer file: read from or write to files on disk (file_action='read'/'write', file_path, file_content).\n"
+    "- computer get_screen_info: return primary monitor resolution and DPI.\n"
+    "- computer shell command [timeout=30]: execute a shell command and return stdout/stderr (use with care)."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
