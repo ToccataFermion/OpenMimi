@@ -117,7 +117,14 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  1.069 to get the handle drag distance. Add this to the handle's start screenX to get "
     "  the drag end_x. The drag must be horizontal (same y coordinate). After dragging, wait "
     "  2 seconds and check the screenshot: if the CAPTCHA modal is gone, success; if still "
-    "  present, try adjusting the estimate by ±10px and drag again."
+    "  present, try adjusting the estimate by ±10px and drag again.\n"
+    "- xft.cmbchina.com login flow (verified working): 1) click '登录' to open form, "
+    "  2) eval JS to fill phone/password using HTMLInputElement.prototype.value setter + "
+    "  dispatchEvent(input/change), 3) click the submit button via eval with "
+    "  document.querySelector('.PasswordLogin_loginBtn__yuCsm').click() — do NOT use "
+    "  target_text='登录' for the submit button because the page has multiple '登录' elements. "
+    "  4) If CAPTCHA appears, use pixeldiff via eval JS canvas comparison for gap estimation, "
+    "  then apply the 1.069 scaling factor and try ±10px offsets."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
