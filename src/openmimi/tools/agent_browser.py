@@ -2481,12 +2481,50 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"set_viewport failed: {exc}", is_error=True)
 
     async def _do_save_session(self, inp: dict[str, Any]) -> ToolResult:
-        """Save cookies, localStorage, and sessionStorage to a JSON file."""
+        """Save cookies, localStorage, and sessionStorage to a JSON file.
+
+        Cookies are captured via CDP Network.getAllCookies when available so
+        that HTTP-only cookies are included. Falls back to document.cookie."""
         file_path = inp.get("file_path")
         if not file_path:
             return ToolResult(output="save_session requires 'file_path'", is_error=True)
-        js = """
+
+        # 1) Try CDP for full cookie jar (includes HTTP-only)
+        cdp_js = """
         (async () => {
+            try {
+                const result = await window.__openmimi_cdp_send('Network.getAllCookies');
+                return {ok: true, cookies: result.cookies, method: 'cdp'};
+            } catch (e) {
+                return {error: e.message, method: 'cdp_failed'};
+            }
+        })()
+        """
+        cookies = []
+        cookie_method = "js"
+        try:
+            result = await self._exec("eval", cdp_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("ok"):
+                cookies = result_value.get("cookies", [])
+                cookie_method = "cdp"
+        except Exception:
+            pass
+
+        # 2) Fallback to document.cookie string for backward-compat file format
+        if not cookies:
+            try:
+                result = await self._exec("eval", "(() => ({cookies: document.cookie}))()", "--json")
+                data = self._parse_data(result.stdout)
+                result_value = data.get("result") if isinstance(data, dict) else None
+                cookies = result_value.get("cookies", "") if isinstance(result_value, dict) else ""
+            except Exception:
+                cookies = ""
+
+        # 3) Always fetch local/sessionStorage via JS
+        storage_js = """
+        (() => {
             const local = {};
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -2497,26 +2535,38 @@ class AgentBrowserTool(ToolBase):
                 const k = sessionStorage.key(i);
                 session[k] = sessionStorage.getItem(k);
             }
-            return {
-                url: window.location.href,
-                cookies: document.cookie,
-                localStorage: local,
-                sessionStorage: session,
-            };
+            return {url: window.location.href, localStorage: local, sessionStorage: session};
         })()
         """
         try:
-            result = await self._exec("eval", js, "--json")
+            result = await self._exec("eval", storage_js, "--json")
             data = self._parse_data(result.stdout)
-            result_value = data.get("result") if isinstance(data, dict) else None
+            storage_value = data.get("result") if isinstance(data, dict) else {}
+        except Exception:
+            storage_value = {}
+
+        session_data = {
+            "url": storage_value.get("url", ""),
+            "cookies": cookies,
+            "localStorage": storage_value.get("localStorage", {}),
+            "sessionStorage": storage_value.get("sessionStorage", {}),
+        }
+
+        try:
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(result_value, f, ensure_ascii=False, indent=2)
-            return ToolResult(output=f"Session saved to {file_path}")
+                json.dump(session_data, f, ensure_ascii=False, indent=2)
+            return ToolResult(
+                output=f"Session saved to {file_path} (cookies via {cookie_method})",
+                details={"cookie_method": cookie_method, "cookie_count": len(cookies) if isinstance(cookies, list) else 0},
+            )
         except Exception as exc:
             return ToolResult(output=f"save_session failed: {exc}", is_error=True)
 
     async def _do_load_session(self, inp: dict[str, Any]) -> ToolResult:
-        """Restore cookies, localStorage, and sessionStorage from a JSON file."""
+        """Restore cookies, localStorage, and sessionStorage from a JSON file.
+
+        Supports both CDP cookie arrays (with domain/path) and legacy
+        semicolon-separated cookie strings."""
         file_path = inp.get("file_path")
         if not file_path:
             return ToolResult(output="load_session requires 'file_path'", is_error=True)
@@ -2526,23 +2576,59 @@ class AgentBrowserTool(ToolBase):
         except Exception as exc:
             return ToolResult(output=f"Failed to read session file: {exc}", is_error=True)
 
-        cookies = session_data.get("cookies", "")
+        cookies = session_data.get("cookies", [])
         local = session_data.get("localStorage", {})
         session = session_data.get("sessionStorage", {})
 
-        js_parts = ["(() => {"]
-        if cookies:
+        # Build JS that restores cookies then storage
+        if isinstance(cookies, list) and cookies:
+            js_parts = ["(async () => {"]
+            for c in cookies:
+                if not isinstance(c, dict):
+                    continue
+                name = c.get("name", "")
+                if not name:
+                    continue
+                value = c.get("value", "")
+                domain = c.get("domain", "")
+                path = c.get("path", "/")
+                if domain:
+                    js_parts.append(
+                        f"    try {{ await window.__openmimi_cdp_send('Network.setCookie', {json.dumps({'name': name, 'value': value, 'domain': domain, 'path': path})}); }} catch (e) {{}}"
+                    )
+                else:
+                    js_parts.append(
+                        f"    try {{ await window.__openmimi_cdp_send('Network.setCookie', {{ name: {json.dumps(name)}, value: {json.dumps(value)}, url: window.location.href }}); }} catch (e) {{}}"
+                    )
+            for k, v in local.items():
+                js_parts.append(f"    localStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            for k, v in session.items():
+                js_parts.append(f"    sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            js_parts.append("    return {ok: true, method: 'cdp'};")
+            js_parts.append("})()")
+            js = "\n".join(js_parts)
+        elif isinstance(cookies, str) and cookies:
+            js_parts = ["(() => {"]
             for c in cookies.split(";"):
                 c = c.strip()
                 if c:
                     js_parts.append(f"    document.cookie = {json.dumps(c)};")
-        for k, v in local.items():
-            js_parts.append(f"    localStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
-        for k, v in session.items():
-            js_parts.append(f"    sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
-        js_parts.append("    return {ok: true};")
-        js_parts.append("})()")
-        js = "\n".join(js_parts)
+            for k, v in local.items():
+                js_parts.append(f"    localStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            for k, v in session.items():
+                js_parts.append(f"    sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            js_parts.append("    return {ok: true, method: 'js'};")
+            js_parts.append("})()")
+            js = "\n".join(js_parts)
+        else:
+            js_parts = ["(() => {"]
+            for k, v in local.items():
+                js_parts.append(f"    localStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            for k, v in session.items():
+                js_parts.append(f"    sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});")
+            js_parts.append("    return {ok: true, method: 'storage_only'};")
+            js_parts.append("})()")
+            js = "\n".join(js_parts)
 
         try:
             result = await self._exec("eval", js, "--json")
