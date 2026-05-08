@@ -82,6 +82,10 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  an OS-level drag at precise screen coordinates. The drag generates trusted "
     "  mouse events that bypass isTrusted checks. Coordinates from the screenshot "
     "  are absolute screen pixels (the screenshot is the primary monitor).\n"
+    "- Slider CAPTCHA critical: the drag must be SLOW so the page JavaScript "
+    "  can track the movement and update the puzzle piece. Use steps=80 and "
+    "  delay_ms=25 (total ~2 seconds). Drag the handle (.imageVerifyDragButton), "
+    "  NOT the puzzle image itself.\n"
     "- xft.cmbchina.com specific: The slider CAPTCHA requires dragging the "
     "  puzzle piece to align with the gap in the background image. Before dragging, "
     "  call agent_browser focus, then use eval JS to get exact element positions: "
@@ -90,7 +94,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  screenX = window.screenX + (window.outerWidth - window.innerWidth) / 2 + rect.left "
     "  and screenY = window.screenY + window.outerHeight - window.innerHeight "
     "  - (window.outerWidth - window.innerWidth) / 2 + rect.top. "
-    "  Then use computer.mouse_drag with those exact screen coordinates."
+    "  Then use computer.mouse_drag with steps=80 delay_ms=25 and those exact screen coordinates."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000

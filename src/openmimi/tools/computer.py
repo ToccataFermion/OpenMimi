@@ -35,7 +35,8 @@ _TOOL_DESCRIPTION = (
     "- mouse_click [x y] [button=left|right]: click at coordinates or current position\n"
     "- mouse_down [button=left|right]: press and hold mouse button at current position\n"
     "- mouse_up [button=left|right]: release mouse button at current position\n"
-    "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20]: drag with bezier smoothing\n"
+    "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20] [delay_ms=10]: drag with bezier smoothing. "
+    "For slider CAPTCHAs use steps=80 and delay_ms=25 so the page JavaScript can track the movement.\n"
     "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
     "- mouse_double_click [x y] [button=left|right]: double-click at coordinates or current position\n"
     "- cursor_position: return current mouse cursor screen coordinates\n"
@@ -63,6 +64,20 @@ MOUSEEVENTF_WHEEL = 0x0800
 # Keyboard constants
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
+
+# Make the process per-monitor DPI aware so that GetSystemMetrics returns
+# physical pixel counts that match mss screenshots.  Without this, Windows
+# DPI scaling causes a coordinate mismatch on high-DPI displays.
+_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+try:
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(
+        _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    )
+except (AttributeError, OSError):
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
 
 # Virtual-key codes commonly used by agents
 _VK_MAP = {
@@ -152,14 +167,49 @@ def _scale_to_abs(x: int, y: int) -> tuple[int, int]:
     return abs_x, abs_y
 
 
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_ulonglong),
+    ]
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_ulonglong),
+    ]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", _MOUSEINPUT),
+        ("ki", _KEYBDINPUT),
+        ("hi", _HARDWAREINPUT),
+    ]
+
+
 class _INPUT(ctypes.Structure):
-    class _I(ctypes.Union):
-        _fields_ = [
-            ("mi", ctypes.c_ulong * 7),  # MOUSEINPUT simplified
-            ("ki", ctypes.c_ulong * 7),  # KEYBDINPUT simplified
-        ]
-    _anonymous_ = ("i",)
-    _fields_ = [("type", ctypes.c_ulong), ("i", _I)]
+    _anonymous_ = ("u",)
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("u", _INPUT_UNION),
+    ]
 
 
 class ComputerTool(ToolBase):
@@ -318,11 +368,12 @@ class ComputerTool(ToolBase):
         abs_x, abs_y = _scale_to_abs(x, y)
         inp_struct = _INPUT()
         inp_struct.type = INPUT_MOUSE
-        inp_struct.i.mi[0] = abs_x
-        inp_struct.i.mi[1] = abs_y
-        inp_struct.i.mi[2] = 0
-        inp_struct.i.mi[3] = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
-        inp_struct.i.mi[4] = 0
+        inp_struct.mi.dx = abs_x
+        inp_struct.mi.dy = abs_y
+        inp_struct.mi.mouseData = 0
+        inp_struct.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
+        inp_struct.mi.time = 0
+        inp_struct.mi.dwExtraInfo = 0
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
         return ToolResult(output=f"Mouse moved to ({x}, {y})")
 
@@ -384,6 +435,7 @@ class ComputerTool(ToolBase):
         end_y = inp.get("end_y", start_y)
         button = inp.get("button", "left")
         steps = max(2, min(inp.get("steps", 20), 200))
+        delay_ms = max(1, min(inp.get("delay_ms", 10), 500))
         # Move to start
         await self._do_mouse_move({"x": start_x, "y": start_y})
         time.sleep(0.05)
@@ -400,7 +452,7 @@ class ComputerTool(ToolBase):
             bx += random.randint(-1, 1)
             by += random.randint(-1, 1)
             await self._do_mouse_move({"x": bx, "y": by})
-            time.sleep(0.01)
+            time.sleep(delay_ms / 1000)
         # Final position
         await self._do_mouse_move({"x": end_x, "y": end_y})
         time.sleep(0.05)
@@ -481,11 +533,12 @@ class ComputerTool(ToolBase):
         delta = int(amount * 120)
         inp_struct = _INPUT()
         inp_struct.type = INPUT_MOUSE
-        inp_struct.i.mi[0] = 0
-        inp_struct.i.mi[1] = 0
-        inp_struct.i.mi[2] = delta
-        inp_struct.i.mi[3] = MOUSEEVENTF_WHEEL
-        inp_struct.i.mi[4] = 0
+        inp_struct.mi.dx = 0
+        inp_struct.mi.dy = 0
+        inp_struct.mi.mouseData = delta
+        inp_struct.mi.dwFlags = MOUSEEVENTF_WHEEL
+        inp_struct.mi.time = 0
+        inp_struct.mi.dwExtraInfo = 0
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
         return ToolResult(output=f"Mouse scrolled {amount}")
 
@@ -520,21 +573,22 @@ class ComputerTool(ToolBase):
     def _send_mouse_event(self, flags: int) -> None:
         inp = _INPUT()
         inp.type = INPUT_MOUSE
-        inp.i.mi[0] = 0
-        inp.i.mi[1] = 0
-        inp.i.mi[2] = 0
-        inp.i.mi[3] = flags
-        inp.i.mi[4] = 0
+        inp.mi.dx = 0
+        inp.mi.dy = 0
+        inp.mi.mouseData = 0
+        inp.mi.dwFlags = flags
+        inp.mi.time = 0
+        inp.mi.dwExtraInfo = 0
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
 
     def _send_key_event(self, vk: int, up: bool) -> None:
         inp = _INPUT()
         inp.type = INPUT_KEYBOARD
-        inp.i.ki[0] = vk
-        inp.i.ki[1] = 0
-        inp.i.ki[2] = KEYEVENTF_KEYUP if up else 0
-        inp.i.ki[3] = 0
-        inp.i.ki[4] = 0
+        inp.ki.wVk = vk
+        inp.ki.wScan = 0
+        inp.ki.dwFlags = KEYEVENTF_KEYUP if up else 0
+        inp.ki.time = 0
+        inp.ki.dwExtraInfo = 0
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
 
 
