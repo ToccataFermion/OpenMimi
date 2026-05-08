@@ -106,8 +106,11 @@ class AnthropicClient:
         elapsed = time.monotonic() - t0
         as_dict = _to_dict(result)
         stop = as_dict.get("stop_reason") or "?"
+        usage = as_dict.get("usage") or {}
+        in_tok = usage.get("input_tokens", "?")
+        out_tok = usage.get("output_tokens", "?")
         self._log_progress(
-            f"[llm] turn {idx}: response in {elapsed:.1f}s (stop={stop})"
+            f"[llm] turn {idx}: response in {elapsed:.1f}s (stop={stop}, tokens={in_tok}+{out_tok})"
         )
         return as_dict
 

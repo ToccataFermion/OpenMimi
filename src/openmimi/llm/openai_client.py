@@ -281,7 +281,16 @@ class OpenAIChatClient:
         elapsed = time.monotonic() - t0
         shaped = _openai_completion_to_anthropic_shape(result)
         stop = shaped.get("stop_reason") or "?"
-        self._log(f"[llm/openai] turn {idx}: response in {elapsed:.1f}s (stop={stop})")
+        usage = getattr(result, "usage", None)
+        if usage is not None:
+            in_tok = getattr(usage, "prompt_tokens", "?")
+            out_tok = getattr(usage, "completion_tokens", "?")
+            tok_info = f", tokens={in_tok}+{out_tok}"
+        else:
+            tok_info = ""
+        self._log(
+            f"[llm/openai] turn {idx}: response in {elapsed:.1f}s (stop={stop}{tok_info})"
+        )
         return shaped
 
 

@@ -261,6 +261,16 @@ async def sampling_loop(
     step = 0
 
     for _turn in range(max_turns):
+        _msg_count = len(messages)
+        _text_len = sum(
+            len(str(m.get("content", "")))
+            for m in messages
+        )
+        print(
+            f"[loop] turn {_turn + 1}: {_msg_count} messages, ~{_text_len} chars",
+            file=sys.stderr,
+            flush=True,
+        )
         response = await llm.create(
             system=system,
             messages=messages,
