@@ -47,7 +47,9 @@ python scripts/xft_advanced_login.py
 | `double_click` | Double-click by accessibility ref or text match |
 | `check` / `uncheck` | Toggle checkboxes (never click them) |
 | `type` / `fill` | Type text into inputs |
+| `react_fill` | React-aware fill (prototype setter + events) |
 | `press` | Press a key (Enter, Escape, Tab, etc.) |
+| `key_combo` | Press multiple keys simultaneously (e.g. `['Control','a']`) |
 | `hover` | Hover over an element |
 | `scroll` | Scroll the page |
 | `drag` | Drag and drop between elements |
@@ -62,6 +64,8 @@ python scripts/xft_advanced_login.py
 | `screenshot` | Capture viewport (with optional annotation) |
 | `extract` | Structured extraction: text, headings, links, forms, tables, metadata, images |
 | `page_source` | Raw HTML of the current page |
+| `get_url` | Current page URL |
+| `get_title` | Current page title |
 | `get_box` | Element bounding box for OS-level mouse coordination |
 | `visual_locate` | Find element by OpenCV template matching on screenshot |
 | `scroll_into_view` | Bring element into viewport |
@@ -77,6 +81,7 @@ python scripts/xft_advanced_login.py
 | `console` | Capture recent browser console logs |
 | `pdf` | Save page as PDF |
 | `eval` | Evaluate JavaScript and return result |
+| `cdp` | Send arbitrary Chrome DevTools Protocol commands |
 | `batch` | Execute multiple commands atomically |
 
 ### Tabs & Session
@@ -85,7 +90,7 @@ python scripts/xft_advanced_login.py
 | `tab_list` / `tab_switch` / `tab_new` / `tab_close` | Tab management |
 | `save_session` / `load_session` | JSON-based cookie/storage persistence |
 | `clear_cache` | Wipe cookies, localStorage, sessionStorage |
-| `storage` | Read/write localStorage, sessionStorage, cookies |
+| `storage` | Read/write/delete localStorage, sessionStorage, cookies (CDP-first for cookies) |
 
 ### Anti-Detection & Stealth
 | Feature | Description |
@@ -113,6 +118,7 @@ python scripts/xft_advanced_login.py
 | `locate` | OpenCV template matching on screen |
 | `ocr` | Tesseract OCR for text extraction (chi_sim+eng supported) |
 | `click_text` | Find text on screen via OCR and click it |
+| `click_image` | Find image template on screen via OpenCV and click it |
 | `clipboard` | Read/write system clipboard |
 | `launch` | Start applications by name or path |
 | `file` | Read/write files on disk |
@@ -123,7 +129,7 @@ python scripts/xft_advanced_login.py
 
 The default system prompt (`loop.py`) includes detailed guidance for:
 - Browser automation best practices
-- React SPA click fallbacks
+- React SPA click fallbacks and `react_fill` for controlled inputs
 - xft.cmbchina.com login flow and CAPTCHA solving
 - Slider CAPTCHA physics (scaling factor, slow drag, OS-level events)
 - Tool timeout configuration (`OPENMIMI_TOOL_TIMEOUT_S`)
