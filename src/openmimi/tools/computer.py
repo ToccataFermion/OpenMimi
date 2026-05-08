@@ -45,7 +45,9 @@ _TOOL_DESCRIPTION = (
     "- key_combo keys: press multiple keys simultaneously (e.g. ['Control','c']).\n"
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle\n"
-    "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)"
+    "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)\n"
+    "- list_windows: enumerate all visible windows with titles and positions\n"
+    "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard"
 )
 
 # Windows input constants
@@ -262,6 +264,8 @@ class ComputerTool(ToolBase):
                             "type",
                             "wait",
                             "locate",
+                            "list_windows",
+                            "clipboard",
                         ],
                         "description": "The desktop action to perform.",
                     },
@@ -323,6 +327,15 @@ class ComputerTool(ToolBase):
                         "type": "number",
                         "description": "Minimum confidence threshold for locate (0.0-1.0, default 0.8).",
                     },
+                    "clipboard_action": {
+                        "type": "string",
+                        "enum": ["read", "write"],
+                        "description": "Clipboard operation for action='clipboard'.",
+                    },
+                    "clipboard_text": {
+                        "type": "string",
+                        "description": "Text to write to clipboard (for clipboard_action='write').",
+                    },
                 },
                 "required": ["action"],
             },
@@ -352,6 +365,8 @@ class ComputerTool(ToolBase):
             "type": self._do_type,
             "wait": self._do_wait,
             "locate": self._do_locate,
+            "list_windows": self._do_list_windows,
+            "clipboard": self._do_clipboard,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -619,6 +634,77 @@ class ComputerTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"Locate error: {exc}", is_error=True)
+
+    async def _do_list_windows(self, _inp: dict[str, Any]) -> ToolResult:
+        """List all visible windows with their titles and positions."""
+        try:
+            import win32gui
+        except ImportError:
+            return ToolResult(output="win32gui not available", is_error=True)
+
+        windows = []
+
+        def _enum(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title:
+                    try:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        windows.append({
+                            "title": title,
+                            "left": rect[0],
+                            "top": rect[1],
+                            "right": rect[2],
+                            "bottom": rect[3],
+                            "width": rect[2] - rect[0],
+                            "height": rect[3] - rect[1],
+                        })
+                    except Exception:
+                        windows.append({"title": title})
+            return True
+
+        win32gui.EnumWindows(_enum, None)
+        output = json.dumps(windows[:50], ensure_ascii=False, indent=2)
+        return ToolResult(
+            output=output[:4000],
+            details={"window_count": len(windows)},
+        )
+
+    async def _do_clipboard(self, inp: dict[str, Any]) -> ToolResult:
+        """Read from or write to the system clipboard."""
+        cb_action = inp.get("clipboard_action", "read")
+        try:
+            import win32clipboard
+            import win32con
+        except ImportError:
+            return ToolResult(output="pywin32 not available for clipboard", is_error=True)
+
+        if cb_action == "read":
+            try:
+                win32clipboard.OpenClipboard()
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                    text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                elif win32clipboard.IsClipboardFormatAvailable(win32con.CF_TEXT):
+                    text = win32clipboard.GetClipboardData(win32con.CF_TEXT)
+                else:
+                    text = ""
+                win32clipboard.CloseClipboard()
+                return ToolResult(output=f"Clipboard: {text[:500]}")
+            except Exception as exc:
+                return ToolResult(output=f"Clipboard read error: {exc}", is_error=True)
+
+        elif cb_action == "write":
+            text = str(inp.get("clipboard_text", ""))
+            try:
+                win32clipboard.OpenClipboard()
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+                win32clipboard.CloseClipboard()
+                return ToolResult(output=f"Wrote {len(text)} chars to clipboard")
+            except Exception as exc:
+                return ToolResult(output=f"Clipboard write error: {exc}", is_error=True)
+
+        return ToolResult(output=f"Unknown clipboard action: {cb_action}", is_error=True)
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         amount = inp.get("amount", 0)

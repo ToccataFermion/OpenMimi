@@ -52,6 +52,8 @@ _TOOL_DESCRIPTION = (
     "the element or text appears on the page (useful for React/Vue SPAs that render lazily). "
     "Network debugging: action='network_log' with optional 'duration_ms' and 'filter' "
     "intercepts fetch/XHR requests to discover hidden API endpoints. "
+    "Storage: action='storage' with 'storage_action' (get/set/delete/clear) and 'storage_type' "
+    "(localStorage, sessionStorage, cookies) to read or modify browser storage. "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -158,6 +160,7 @@ class AgentBrowserTool(ToolBase):
                             "get_box",
                             "wait_for",
                             "network_log",
+                            "storage",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -283,6 +286,24 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "Filter string for network_log to only show URLs/requests containing this text.",
                     },
+                    "storage_action": {
+                        "type": "string",
+                        "enum": ["get", "set", "delete", "clear", "list"],
+                        "description": "Storage operation for action='storage' (default: get).",
+                    },
+                    "storage_type": {
+                        "type": "string",
+                        "enum": ["localStorage", "sessionStorage", "cookies"],
+                        "description": "Storage target for action='storage' (default: localStorage).",
+                    },
+                    "storage_key": {
+                        "type": "string",
+                        "description": "Key for storage get/set/delete.",
+                    },
+                    "storage_value": {
+                        "type": "string",
+                        "description": "Value for storage set.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -349,6 +370,7 @@ class AgentBrowserTool(ToolBase):
             "get_box": self._do_get_box,
             "wait_for": self._do_wait_for,
             "network_log": self._do_network_log,
+            "storage": self._do_storage,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1051,6 +1073,67 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(
                 output=f"network_log failed: {exc}", is_error=True
             )
+
+    async def _do_storage(self, inp: dict[str, Any]) -> ToolResult:
+        """Read or modify browser storage: localStorage, sessionStorage, or cookies."""
+        storage_action = inp.get("storage_action", "get")
+        storage_type = inp.get("storage_type", "localStorage")
+        key = inp.get("storage_key", "")
+        value = inp.get("storage_value", "")
+
+        if storage_type == "cookies":
+            if storage_action == "get":
+                js = "(() => ({cookies: document.cookie}))()"
+            elif storage_action == "set":
+                if not key:
+                    return ToolResult(output="cookie set requires 'storage_key' (name=value)", is_error=True)
+                js = f"(() => {{ document.cookie = {json.dumps(key)}; return {{ok: true}}; }})()"
+            elif storage_action == "clear":
+                js = """
+                (() => {
+                    const cookies = document.cookie.split(';');
+                    for (let c of cookies) {
+                        const [name] = c.trim().split('=');
+                        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+                    }
+                    return {ok: true};
+                })()
+                """
+            else:
+                return ToolResult(output=f"Unsupported cookie action: {storage_action}", is_error=True)
+        else:
+            # localStorage or sessionStorage
+            store = "localStorage" if storage_type == "localStorage" else "sessionStorage"
+            if storage_action == "get":
+                if key:
+                    js = f"(() => ({{value: {store}.getItem({json.dumps(key)})}}))()"
+                else:
+                    js = f"(() => {{ const items = {{}}; for (let i = 0; i < {store}.length; i++) {{ const k = {store}.key(i); items[k] = {store}.getItem(k); }} return items; }})()"
+            elif storage_action == "set":
+                if not key:
+                    return ToolResult(output="storage set requires 'storage_key'", is_error=True)
+                js = f"(() => {{ {store}.setItem({json.dumps(key)}, {json.dumps(value)}); return {{ok: true}}; }})()"
+            elif storage_action == "delete":
+                if not key:
+                    return ToolResult(output="storage delete requires 'storage_key'", is_error=True)
+                js = f"(() => {{ {store}.removeItem({json.dumps(key)}); return {{ok: true}}; }})()"
+            elif storage_action == "clear":
+                js = f"(() => {{ {store}.clear(); return {{ok: true}}; }})()"
+            elif storage_action == "list":
+                js = f"(() => {{ const keys = []; for (let i = 0; i < {store}.length; i++) {{ keys.push({store}.key(i)); }} return {{keys}}; }})()"
+            else:
+                return ToolResult(output=f"Unsupported storage action: {storage_action}", is_error=True)
+
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            return ToolResult(
+                output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                details={"storage_type": storage_type, "action": storage_action, "key": key},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"storage failed: {exc}", is_error=True)
 
     async def _do_close(self) -> ToolResult:
         if self._started:

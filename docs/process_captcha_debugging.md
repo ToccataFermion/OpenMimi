@@ -209,6 +209,60 @@ Pixeldiff suggests gap=167px, handle_drag=178px
 
 ---
 
+### 第十三阶段：端到端全自动登录成功（2025-05-08）
+
+**突破：** `test_xft_login_comprehensive.py` 首次实现**完全无人干预**的登录成功。
+
+### 成功日志
+
+```
+=== Navigate ===
+  Navigated to https://xft.cmbchina.com/
+=== Click Login ===
+  Clicking 登录...
+  Login form appeared.
+=== Fill Form ===
+  Form fill: {"hasPhone": true, "hasPass": true, "hasCheckbox": true}
+=== Submit ===
+  Submit click: {"class": "PasswordLogin_loginBtn__yuCsm", "clicked": true, "text": "登录"}
+  CAPTCHA appeared.
+=== Solve CAPTCHA ===
+  Handle screen: (436, 647)
+  Trying edge-based gap detection...
+  Edge detection: gap=16px (diff=281, edges=50)
+  Edge suggests handle_drag=17px
+  Drag 17px: failed          ← 验证失败，CAPTCHA 自动重置
+  Drag 7px: failed           ← 新实例
+  Trying pixeldiff gap detection...
+  Pixeldiff: gap=224px
+  Pixeldiff suggests handle_drag=239px
+  Drag 239px: failed         ← 新实例
+  Drag 229px: failed         ← 新实例
+  Drag 249px: SOLVED         ← 新实例，pixeldiff +10 偏移命中！
+  SUCCESS with offset 10!
+=== LOGIN SUCCESS ===
+```
+
+### 关键发现
+
+1. **登录按钮必须用精确选择器：** `target_text="登录"` 有歧义（页面顶部导航和表单提交按钮都是"登录"）。必须使用 `document.querySelector('.PasswordLogin_loginBtn__yuCsm').click()` 才能正确提交。
+
+2. **表单填充必须用 React setter 模式：** 直接使用 `input.value = ...` 不触发 React 状态更新。必须使用 `HTMLInputElement.prototype.value` 的原生 setter + `dispatchEvent(new Event('input'))` + `dispatchEvent(new Event('change'))`。
+
+3. **边缘检测在该 CAPTCHA 上表现极差：** 仅找到 50 个边缘像素，估计 gap=16px（完全错误）。原因可能是拼图块的"缺口边缘"不是简单的 alpha 透明过渡，而是带有颜色混合的实体边缘。
+
+4. **像素差分是当前最准确的算法：** 估计 gap=224px，实际该实例缺口约 233px（换算后 handle=249px），偏差仅约 9px。结合 ±10px 偏移搜索，命中概率较高。
+
+5. **工具链验证：**
+   - `agent_browser.click` (force=true) — 工作
+   - `agent_browser.eval` (React setter) — 工作
+   - `agent_browser.get_box` — 工作（获取了"拖动滑块"的坐标）
+   - `agent_browser.focus` — 工作
+   - `computer.mouse_drag` (80 steps, 25ms, human-like trajectory) — 工作
+   - 缩放因子 1.069 — 正确
+
+---
+
 ## 当前瓶颈
 
 **已解决：**
