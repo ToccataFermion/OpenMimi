@@ -126,12 +126,15 @@ class Orchestrator:
         extra_args = os.environ.get("OPENMIMI_BROWSER_ARGS", "")
         if extra_args:
             browser_args = [a.strip() for a in extra_args.split(",") if a.strip()]
+        slow_mo_raw = os.environ.get("OPENMIMI_BROWSER_SLOW_MO_MS", "")
+        slow_mo_ms = int(slow_mo_raw) if slow_mo_raw.strip().lstrip("-").isdigit() else 0
         tools.register(
             AgentBrowserTool(
                 download_dir=str(cfg.browser.download_dir),
                 viewport=(cfg.browser.viewport_width, cfg.browser.viewport_height),
                 headless=False,
                 browser_args=browser_args,
+                slow_mo_ms=slow_mo_ms,
             )
         )
         tools.register(ComputerTool(screen_dir=str(cfg.storage.screen_dir)))

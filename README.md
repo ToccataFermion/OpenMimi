@@ -92,6 +92,7 @@ python scripts/xft_advanced_login.py
 | `proxy` | Route traffic through proxy server |
 | `user_data_dir` | Persistent Chrome profile (IndexedDB, cache, extensions) |
 | `screenshot_scale` | Scale screenshots to reduce LLM token usage |
+| `slow_mo_ms` | Randomized delay after each action for human-like pacing |
 | Auto-retry | Exponential backoff for transient CDP failures |
 | Auto-screenshot-on-error | Captures state on failure for debugging |
 

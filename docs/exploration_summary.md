@@ -99,6 +99,8 @@ DL 解法流程：
 | `proxy` | `--proxy-server` 路由流量 through 代理 |
 | `user_data_dir` | `--user-data-dir` 完整 profile 持久化（IndexedDB, cache, extensions） |
 | `stealth` | 启用 14 项反检测 JS 注入 |
+| `slow_mo_ms` | 每次动作后插入随机延迟（±20% jitter），模拟人类操作节奏 |
+| `wait_for_network_idle` | 等待网络空闲（SPA 异步加载完成检测） |
 
 ### 3.4 ComputerTool 新增动作
 

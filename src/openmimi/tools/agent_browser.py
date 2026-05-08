@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -75,7 +76,9 @@ _TOOL_DESCRIPTION = (
     "action='load_session' with 'file_path' restores them to avoid repeated logins. "
     "Persistent profile: pass user_data_dir when creating the tool to reuse cookies, cache, "
     "and extensions across sessions (more robust than save_session/load_session). "
-    "Proxy: pass proxy='http://host:port' when creating the tool to route traffic through a proxy.\n"
+    "Proxy: pass proxy='http://host:port' when creating the tool to route traffic through a proxy. "
+    "Slow motion: pass slow_mo_ms when creating the tool to add a randomized delay after each action, "
+    "making automation less detectable by bot detection systems (e.g. slow_mo_ms=200).\n"
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -289,9 +292,11 @@ class AgentBrowserTool(ToolBase):
         proxy: str | None = None,
         user_data_dir: str | None = None,
         screenshot_scale: float = 1.0,
+        slow_mo_ms: int = 0,
     ) -> None:
         self._download_dir = Path(download_dir)
         self._screenshot_scale = max(0.1, min(1.0, float(screenshot_scale)))
+        self._slow_mo_ms = max(0, int(slow_mo_ms))
         self._viewport = viewport
         self._headless = headless
         self._stealth = stealth
@@ -627,7 +632,13 @@ class AgentBrowserTool(ToolBase):
             await self._start_browser()
 
         try:
-            return await self._dispatch(action, tool_input)
+            result = await self._dispatch(action, tool_input)
+            if self._slow_mo_ms > 0 and action not in ("close", "wait", "wait_for", "wait_for_navigation", "wait_for_network_idle", "screenshot"):
+                jitter = self._slow_mo_ms * 0.2
+                delay = (self._slow_mo_ms + random.uniform(-jitter, jitter)) / 1000.0
+                delay = max(0.05, delay)
+                await asyncio.sleep(delay)
+            return result
         except Exception as e:
             # Capture screenshot on error to aid debugging
             image: str | None = None
