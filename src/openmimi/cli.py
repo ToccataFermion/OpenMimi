@@ -222,6 +222,10 @@ def chat(
                     continue
                 typer.echo(f"\n{reply}\n")
         finally:
+            try:
+                await orch.save_chat_memory(messages)
+            except Exception:
+                pass
             await orch.close()
 
     try:
@@ -333,6 +337,10 @@ def chat_main() -> None:
                     continue
                 print(f"\n{reply}\n")
         finally:
+            try:
+                await orch.save_chat_memory(messages)
+            except Exception:
+                pass
             await orch.close()
 
     try:

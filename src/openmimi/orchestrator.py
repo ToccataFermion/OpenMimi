@@ -203,14 +203,7 @@ class Orchestrator:
         finally:
             await self.tools.close_all()
 
-        if self.memory and domain:
-            try:
-                new_mem = await self._summarize_session(messages, domain)
-                if new_mem:
-                    merged = self.memory.merge(domain, new_mem)
-                    self.memory.save(domain, merged)
-            except Exception:
-                pass
+        await self._save_session_memory(messages, domain)
 
         return {
             "session_id": session_id,
@@ -286,6 +279,31 @@ class Orchestrator:
         )
         return _extract_last_assistant_text(messages)
 
+    async def _save_session_memory(
+        self, messages: list[dict[str, Any]], domain: str | None = None
+    ) -> None:
+        if not self.memory:
+            return
+        if domain is None:
+            domain = _extract_domain_from_messages(messages)
+        if not domain:
+            return
+        try:
+            new_mem = await self._summarize_session(messages, domain)
+            if new_mem:
+                merged = self.memory.merge(domain, new_mem)
+                self.memory.save(domain, merged)
+        except Exception:
+            pass
+
+    async def save_chat_memory(self, messages: list[dict[str, Any]]) -> None:
+        """Persist site memory after a chat session ends.
+
+        Call this before ``close()`` so the session's lessons are
+        summarized and written to disk once, not every turn.
+        """
+        await self._save_session_memory(messages)
+
     async def close(self) -> None:
         await self.tools.close_all()
 
@@ -335,6 +353,25 @@ def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
         if isinstance(content, str):
             return content
     return ""
+
+
+def _extract_domain_from_messages(messages: list[dict[str, Any]]) -> str | None:
+    """Find the first URL domain in any user message (search newest first)."""
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            domain = extract_domain(content)
+            if domain:
+                return domain
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    domain = extract_domain(block.get("text", ""))
+                    if domain:
+                        return domain
+    return None
 
 
 __all__ = ["Orchestrator"]
