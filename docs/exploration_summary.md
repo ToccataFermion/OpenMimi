@@ -171,25 +171,39 @@ DL 解法流程：
 |------|------|
 | `click_image` | OpenCV 模板匹配找到屏幕图像并点击其中心 |
 
-## 5. 脚本更新
+## 5. 新增工具能力（第四批次，2026-05-08）
+
+### 5.1 ComputerTool
+
+| 动作 | 说明 |
+|------|------|
+| `mouse_move` humanize | 新增 `humanize=true` 参数，使用 Bezier 轨迹 + 加减速曲线模拟人类鼠标移动，替代瞬间跳跃 |
+| `batch` | 批量执行多个桌面动作（`steps` 数组），`bail` 控制遇错是否中断，减少 LLM 往返 |
+
+### 5.2 Bug 修复
+
+- `click_image`：修复调用不存在的方法 `_mouse_click`，改为正确的 `mouse_move` + `SendInput`
+- `click_text`：修复调用不存在的 `_send_mouse_move` / `_send_mouse_click`，改为正确的异步流程
+
+## 6. 脚本更新
 
 - `scripts/xft_advanced_login.py` 已迁移至 `react_fill`，移除内联 `setReactValue` eval JS
 
-## 6. 下一步方向
+## 7. 下一步方向
 
-### 6.1 高优先级
+### 7.1 高优先级
 
 1. **测试验证** - 在真实环境运行 xft_advanced_login.py 验证所有新功能
 2. **Vision-based 元素定位** - 减少对 DOM 的依赖，用 VLM 理解页面视觉布局
 3. **AI 驱动的自愈选择器** - 元素变更时自动找到等效元素
 
-### 6.2 中优先级
+### 7.2 中优先级
 
 4. **行为级反检测增强** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
 5. **Camoufox 集成评估** - Firefox C++ 级补丁的 open-source 替代方案（原始维护者 2025-03 后失联，社区 fork 活跃中）
 6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入（click_image 已覆盖视觉场景）
 
-### 6.3 长期
+### 7.3 长期
 
 7. **多模态理解** - 结合截图 + DOM + OCR 进行联合推理
 8. **自动重试与恢复** - 智能检测失败原因并自动调整策略重试
