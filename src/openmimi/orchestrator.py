@@ -20,7 +20,7 @@ from .llm import AnthropicClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
-from .tools import AgentBrowserTool, ToolCollection
+from .tools import AgentBrowserTool, ComputerTool, FileTool, ShellTool, ToolCollection
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
@@ -91,12 +91,22 @@ class Orchestrator:
         )
 
         tools = ToolCollection()
+        browser_args = cfg.browser.args or []
+        # Allow overriding via env var for quick experimentation
+        extra_args = os.environ.get("OPENMIMI_BROWSER_ARGS", "")
+        if extra_args:
+            browser_args = [a.strip() for a in extra_args.split(",") if a.strip()]
         tools.register(
             AgentBrowserTool(
                 download_dir=str(cfg.browser.download_dir),
                 viewport=(cfg.browser.viewport_width, cfg.browser.viewport_height),
+                headless=False,
+                browser_args=browser_args,
             )
         )
+        tools.register(ComputerTool(screen_dir=str(cfg.storage.screen_dir)))
+        tools.register(ShellTool())
+        tools.register(FileTool())
 
         audit = JsonlAuditLogger(
             audit_dir=cfg.storage.audit_dir,
@@ -269,9 +279,6 @@ def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
         if isinstance(content, str):
             return content
     return ""
-
-
-__all__ = ["Orchestrator"]
 
 
 __all__ = ["Orchestrator"]

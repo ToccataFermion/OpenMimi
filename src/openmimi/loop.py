@@ -68,12 +68,20 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  For multi-line logic wrap in an IIFE like (() => { ... })().\n"
     "- Use action='check' / 'uncheck' for checkboxes; never click a checkbox.\n"
     "- If a standard click does not trigger the expected page change "
-    "  (common on React SPAs), try focusing the element first then press Enter.\n"
+    "  (common on React SPAs), retry with force=true on the click action. "
+    "  This uses CDP mouse down/up instead of synthetic click events.\n"
     "- After interacting with SPA pages, wait briefly before taking a snapshot "
     "  to let React/Vue render settle.\n"
     "- The first browser navigate after starting can take 2-5 minutes on Windows "
     "  while the Chromium daemon initialises. If it times out, retry the same "
-    "  navigate command once; the daemon will be ready."
+    "  navigate command once; the daemon will be ready.\n"
+    "- If a CAPTCHA or human-verification challenge is detected, STOP and ask "
+    "  the user for help. Do not retry the same action repeatedly; slider/click "
+    "  CAPTCHAs cannot be solved by standard automation tools.\n"
+    "- xft.cmbchina.com specific: The login slider CAPTCHA checks isTrusted on "
+    "  mouse events, so CDP-injected drag actions will always fail. If this "
+    "  CAPTCHA appears, ask the user to solve it manually or use ComputerUse "
+    "  with a headed browser for OS-level trusted input."
 )
 
 _RESULT_SUMMARY_MAX_CHARS = 4000
@@ -263,6 +271,13 @@ async def sampling_loop(
                 continue
 
             duration_ms = int((time.monotonic() - t0) * 1000)
+            # Prominently flag CAPTCHA so operators notice even in long logs
+            if result.is_error and result.details and result.details.get("error_code") == ErrorCode.CAPTCHA_DETECTED:
+                _tool_progress(
+                    f"\n{'='*60}\n"
+                    f"[tool] step {step}: CAPTCHA DETECTED – human intervention required\n"
+                    f"{'='*60}"
+                )
             tool_result_blocks.append(_to_tool_result_block(block_id, result))
             _tool_progress(
                 f"[tool] step {step}: {tool_name} finished in {duration_ms}ms"

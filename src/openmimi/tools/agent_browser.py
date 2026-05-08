@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import ToolBase
+from .errors import ErrorCode
 from .result import ToolResult
 
 _TOOL_DESCRIPTION = (
@@ -47,6 +48,20 @@ _DEFAULT_TIMEOUT_S = 300.0
 _DAEMON_WARMUP_TIMEOUT_S = 600.0
 _SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "agent_browser_screenshots"
 
+# CAPTCHA indicators in page text (Chinese + English)
+_CAPTCHA_KEYWORDS = [
+    "验证码", "滑块", "拼图", "拖动", "人机验证", "请向右滑动",
+    "captcha", "recaptcha", "geetest", "hcaptcha",
+    "verify you are human", "slide to verify", "drag to verify",
+    "i'm not a robot", "我不是机器人",
+    "请完成安全验证", "安全验证", "验证通过",
+    "点击验证", "智能验证", "行为验证",
+]
+
+_CAPTCHA_CLASS_PATTERNS = [
+    "captcha", "slider", "verify", "geetest", "nc_",
+]
+
 
 class AgentBrowserTool(ToolBase):
     name = "agent_browser"
@@ -58,10 +73,12 @@ class AgentBrowserTool(ToolBase):
         viewport: tuple[int, int] = (1280, 800),
         headless: bool = False,
         executable: str = "agent-browser",
+        browser_args: list[str] | None = None,
     ) -> None:
         self._download_dir = Path(download_dir)
         self._viewport = viewport
         self._headless = headless
+        self._browser_args = browser_args or []
         # Resolve executable path (npm .cmd wrappers on Windows need shell or full path)
         resolved = shutil.which(executable)
         if resolved:
@@ -134,6 +151,10 @@ class AgentBrowserTool(ToolBase):
                     "target_text": {
                         "type": "string",
                         "description": "Visible text to locate the element when ref is unavailable.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Use low-level mouse down/up sequence instead of standard click. Useful for React SPAs and elements that ignore synthetic click events.",
                     },
                     "value": {
                         "type": "string",
@@ -307,6 +328,20 @@ class AgentBrowserTool(ToolBase):
             "active_tab": self._active_tab_index,
             "refs": refs,
         }
+        # Detect CAPTCHA
+        captcha_info = self._detect_captcha(text)
+        if captcha_info:
+            details["captcha_detected"] = True
+            details["captcha_type"] = captcha_info["type"]
+            return ToolResult(
+                output=f"CAPTCHA detected: {captcha_info['message']}\n\nSnapshot:\n{text}",
+                base64_image=image,
+                is_error=True,
+                details={
+                    **details,
+                    "error_code": ErrorCode.CAPTCHA_DETECTED,
+                },
+            )
         return ToolResult(
             output=f"Snapshot:\n{text}",
             base64_image=image,
@@ -316,14 +351,21 @@ class AgentBrowserTool(ToolBase):
     async def _do_click(self, inp: dict[str, Any]) -> ToolResult:
         ref = inp.get("ref")
         target_text = inp.get("target_text")
+        force = inp.get("force", False)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="click requires 'ref' or 'target_text'")
+
+        if force:
+            return await self._click_with_mouse(selector)
+
+        # Standard click first
         if ref:
             result = await self._exec("click", ref, "--json")
-        elif target_text:
+        else:
             result = await self._exec(
                 "find", "text", target_text, "click", "--json"
             )
-        else:
-            return ToolResult(output="click requires 'ref' or 'target_text'")
         data = self._parse_data(result.stdout)
         # Check if a new tab was opened and auto-switch
         await self._switch_to_newest_tab()
@@ -337,6 +379,43 @@ class AgentBrowserTool(ToolBase):
             output=f"Clicked {clicked}",
             base64_image=image,
             details=details,
+        )
+
+    async def _click_with_mouse(self, selector: str) -> ToolResult:
+        """Fallback click using mouse move/down/up via CDP.
+
+        This bypasses synthetic click event limitations on React SPAs
+        and other pages that ignore standard automation clicks.
+        """
+        try:
+            result = await self._exec("get", "box", selector, "--json")
+            data = self._parse_data(result.stdout)
+            box = data.get("box") if isinstance(data, dict) else None
+            if not box:
+                return ToolResult(
+                    output=f"force click failed: could not get box for {selector}",
+                    is_error=True,
+                )
+            x = int(box.get("x", 0) + box.get("width", 0) / 2)
+            y = int(box.get("y", 0) + box.get("height", 0) / 2)
+        except Exception as exc:
+            return ToolResult(
+                output=f"force click failed getting box: {exc}",
+                is_error=True,
+            )
+
+        # Mouse sequence: move -> down -> up
+        await self._exec("mouse", "move", str(x), str(y), "--json")
+        await asyncio.sleep(0.05)
+        await self._exec("mouse", "down", "left", "--json")
+        await asyncio.sleep(0.05)
+        await self._exec("mouse", "up", "left", "--json")
+        await asyncio.sleep(0.1)
+
+        image = await self._take_screenshot()
+        return ToolResult(
+            output=f"Force-clicked {selector} at ({x}, {y}) via mouse down/up",
+            base64_image=image,
         )
 
     async def _do_check(self, inp: dict[str, Any]) -> ToolResult:
@@ -434,7 +513,8 @@ class AgentBrowserTool(ToolBase):
         )
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
-        image = await self._take_screenshot()
+        path = inp.get("path")
+        image = await self._take_screenshot(path_override=path)
         return ToolResult(output="Screenshot taken", base64_image=image)
 
     async def _do_extract(self, inp: dict[str, Any]) -> ToolResult:
@@ -591,6 +671,37 @@ class AgentBrowserTool(ToolBase):
     #  Helpers
     # ------------------------------------------------------------------ #
 
+    def _detect_captcha(self, snapshot_text: str) -> dict[str, str] | None:
+        """Check snapshot text for CAPTCHA/verification challenge indicators.
+
+        Returns a dict with 'type' and 'message' if detected, else None.
+        """
+        if not snapshot_text:
+            return None
+        text_lower = snapshot_text.lower()
+        for keyword in _CAPTCHA_KEYWORDS:
+            if keyword.lower() in text_lower:
+                # Try to classify the CAPTCHA type
+                if "滑块" in snapshot_text or "拖动" in snapshot_text or "slide" in text_lower:
+                    return {"type": "slider", "message": f"Slider CAPTCHA detected (keyword: '{keyword}'). Human intervention required to complete the drag puzzle."}
+                if "点击" in snapshot_text or "click" in text_lower:
+                    return {"type": "click", "message": f"Click CAPTCHA detected (keyword: '{keyword}'). Human intervention may be required."}
+                return {"type": "unknown", "message": f"CAPTCHA/verification challenge detected (keyword: '{keyword}'). Human intervention may be required."}
+        return None
+
+    def _browser_env(self) -> dict[str, str] | None:
+        """Return environment dict with AGENT_BROWSER_ARGS set if needed.
+
+        Using the env var instead of --args CLI flag avoids a bug where
+        --args combined with --headed causes navigation to fail on some
+        sites (the page opens but the active tab stays about:blank).
+        """
+        if not self._browser_args:
+            return None
+        env = os.environ.copy()
+        env["AGENT_BROWSER_ARGS"] = ",".join(self._browser_args)
+        return env
+
     def _start_warmup(self) -> None:
         """Fire a background thread that starts the agent-browser daemon.
 
@@ -602,12 +713,17 @@ class AgentBrowserTool(ToolBase):
             try:
                 cmd = [
                     self._executable,
+                ]
+                if not self._headless:
+                    cmd.append("--headed")
+                cmd.extend([
                     "open",
                     "about:blank",
                     "--json",
                     "--session-name",
                     self._session_name,
-                ]
+                ])
+                env = self._browser_env()
                 if self._use_shell:
                     subprocess.run(
                         " ".join(cmd),
@@ -617,6 +733,7 @@ class AgentBrowserTool(ToolBase):
                         errors="replace",
                         timeout=_DAEMON_WARMUP_TIMEOUT_S,
                         shell=True,
+                        env=env,
                     )
                 else:
                     subprocess.run(
@@ -626,6 +743,7 @@ class AgentBrowserTool(ToolBase):
                         encoding="utf-8",
                         errors="replace",
                         timeout=_DAEMON_WARMUP_TIMEOUT_S,
+                        env=env,
                     )
             except Exception:
                 pass
@@ -690,9 +808,9 @@ class AgentBrowserTool(ToolBase):
             await asyncio.sleep(1.5)
             await self._refresh_tabs()
 
-    async def _take_screenshot(self) -> str | None:
+    async def _take_screenshot(self, path_override: str | None = None) -> str | None:
         try:
-            path = _SCREENSHOT_DIR / f"ab_{int(time.time() * 1000)}.png"
+            path = Path(path_override) if path_override else _SCREENSHOT_DIR / f"ab_{int(time.time() * 1000)}.png"
             result = await self._exec("screenshot", str(path), "--json")
             data = self._parse_data(result.stdout)
             # agent-browser may return path in data.path
@@ -711,11 +829,16 @@ class AgentBrowserTool(ToolBase):
         asyncio.create_subprocess_* hangs indefinitely with the
         agent-browser native binary on Windows.
         """
-        cmd_list = [self._executable] + list(args)
+        cmd_list = [self._executable]
+        if not self._headless:
+            cmd_list.append("--headed")
+        cmd_list.extend(args)
         shell = self._use_shell
         print(f"[agent-browser exec] {' '.join(cmd_list)}", file=sys.stderr, flush=True)
 
         tout = timeout if timeout is not None else _DEFAULT_TIMEOUT_S
+
+        env = self._browser_env()
 
         def _run() -> subprocess.CompletedProcess[str]:
             if shell:
@@ -727,6 +850,7 @@ class AgentBrowserTool(ToolBase):
                     errors="replace",
                     timeout=tout,
                     shell=True,
+                    env=env,
                 )
             return subprocess.run(
                 cmd_list,
@@ -735,6 +859,7 @@ class AgentBrowserTool(ToolBase):
                 encoding="utf-8",
                 errors="replace",
                 timeout=tout,
+                env=env,
             )
 
         loop = asyncio.get_event_loop()

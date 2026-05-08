@@ -4,6 +4,9 @@ from __future__ import annotations
 from .base import ToolBase
 from .agent_browser import AgentBrowserTool
 from .browser import BrowserTool
+from .computer import ComputerTool
+from .file_tool import FileTool
+from .shell import ShellTool
 from .browser_schema import (
     BROWSER_TOOL_INPUT_ADAPTER,
     BrowserToolDetails,
@@ -29,6 +32,9 @@ from .result import ToolResult
 
 __all__ = [
     "AgentBrowserTool",
+    "ComputerTool",
+    "FileTool",
+    "ShellTool",
     "BROWSER_TOOL_INPUT_ADAPTER",
     "BrowserTool",
     "BrowserToolDetails",
