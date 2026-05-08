@@ -54,6 +54,8 @@ _TOOL_DESCRIPTION = (
     "intercepts fetch/XHR requests to discover hidden API endpoints. "
     "Storage: action='storage' with 'storage_action' (get/set/delete/clear) and 'storage_type' "
     "(localStorage, sessionStorage, cookies) to read or modify browser storage. "
+    "PDF: action='pdf' with 'file_path' saves the current page as a PDF. "
+    "Console: action='console' returns recent browser console logs (errors, warnings, info). "
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -161,6 +163,8 @@ class AgentBrowserTool(ToolBase):
                             "wait_for",
                             "network_log",
                             "storage",
+                            "pdf",
+                            "console",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -304,6 +308,15 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "description": "Value for storage set.",
                     },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Target path for action='pdf' (save page as PDF) or action='download'.",
+                    },
+                    "console_level": {
+                        "type": "string",
+                        "enum": ["all", "error", "warn", "info", "log"],
+                        "description": "Filter level for action='console' (default: all).",
+                    },
                 },
                 "required": ["action"],
             },
@@ -371,6 +384,8 @@ class AgentBrowserTool(ToolBase):
             "wait_for": self._do_wait_for,
             "network_log": self._do_network_log,
             "storage": self._do_storage,
+            "pdf": self._do_pdf,
+            "console": self._do_console,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1134,6 +1149,120 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"storage failed: {exc}", is_error=True)
+
+    async def _do_pdf(self, inp: dict[str, Any]) -> ToolResult:
+        """Save the current page as a PDF via CDP printToPDF."""
+        file_path = inp.get("file_path")
+        if not file_path:
+            return ToolResult(output="pdf requires 'file_path'", is_error=True)
+        js = f"""
+        (async () => {{
+            try {{
+                const result = await window.__openmimi_cdp_send('Page.printToPDF', {{}});
+                if (result && result.data) {{
+                    const binary = atob(result.data);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) {{
+                        bytes[i] = binary.charCodeAt(i);
+                    }}
+                    const blob = new Blob([bytes], {{type: 'application/pdf'}});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = {json.dumps(os.path.basename(file_path))};
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    return {{ok: true, path: {json.dumps(file_path)}}};
+                }}
+                return {{error: 'CDP printToPDF failed', result}};
+            }} catch (e) {{
+                return {{error: e.message}};
+            }}
+        }})()
+        """
+        # Fallback: use window.print() approach
+        fallback_js = f"""
+        (() => {{
+            try {{
+                window.print();
+                return {{ok: true, note: "Triggered browser print dialog. Save as PDF manually.", path: {json.dumps(file_path)}}};
+            }} catch (e) {{
+                return {{error: e.message}};
+            }}
+        }})()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("ok"):
+                return ToolResult(
+                    output=f"PDF saved to {file_path}",
+                    details={"path": file_path},
+                )
+            # Try fallback
+            result = await self._exec("eval", fallback_js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            return ToolResult(
+                output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                details={"path": file_path},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"pdf failed: {exc}", is_error=True)
+
+    async def _do_console(self, inp: dict[str, Any]) -> ToolResult:
+        """Capture recent browser console logs."""
+        level = inp.get("console_level", "all")
+        setup_js = """
+        (() => {
+            if (window.__openmimi_console_logs) return {ok: true, already: true};
+            window.__openmimi_console_logs = [];
+            const origLog = console.log;
+            const origError = console.error;
+            const origWarn = console.warn;
+            const origInfo = console.info;
+            function capture(level, args) {
+                const msg = args.map(a => {
+                    try { return JSON.stringify(a); }
+                    catch (e) { return String(a); }
+                }).join(' ');
+                window.__openmimi_console_logs.push({level, message: msg.substring(0, 500), time: Date.now()});
+                if (window.__openmimi_console_logs.length > 200) {
+                    window.__openmimi_console_logs.shift();
+                }
+            }
+            console.log = function(...args) { capture('log', args); origLog.apply(console, args); };
+            console.error = function(...args) { capture('error', args); origError.apply(console, args); };
+            console.warn = function(...args) { capture('warn', args); origWarn.apply(console, args); };
+            console.info = function(...args) { capture('info', args); origInfo.apply(console, args); };
+            return {ok: true, already: false};
+        })()
+        """
+        js = f"""
+        (() => {{
+            let logs = window.__openmimi_console_logs || [];
+            const level = {json.dumps(level)};
+            if (level !== 'all') {{
+                logs = logs.filter(l => l.level === level);
+            }}
+            return {{
+                count: logs.length,
+                logs: logs.slice(-30)
+            }};
+        }})()
+        """
+        try:
+            await self._exec("eval", setup_js, "--json")
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            return ToolResult(
+                output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                details={"level": level},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"console failed: {exc}", is_error=True)
 
     async def _do_close(self) -> ToolResult:
         if self._started:
