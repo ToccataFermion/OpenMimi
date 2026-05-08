@@ -73,6 +73,71 @@ _CAPTCHA_KEYWORDS = [
     "点击验证", "智能验证", "行为验证",
 ]
 
+# JavaScript to inject after navigation when stealth mode is enabled.
+# Masks the most common automation indicators that sites check for.
+_STEALTH_JS = """
+(() => {
+    if (window.__openmimi_stealth_applied) return;
+    window.__openmimi_stealth_applied = true;
+
+    // Mask navigator.webdriver
+    Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+    });
+
+    // Patch navigator.plugins to appear non-empty
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+        const fakePlugins = [
+            {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format"},
+            {name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: ""},
+            {name: "Native Client", filename: "internal-nacl-plugin", description: ""},
+        ];
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => fakePlugins,
+            configurable: true,
+        });
+    }
+
+    // Patch navigator.languages
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['zh-CN', 'zh', 'en'],
+        configurable: true,
+    });
+
+    // Override Permissions.prototype.query to always allow notifications / etc.
+    const origQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+        parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : origQuery(parameters);
+
+    // Patch Chrome runtime (some sites check for chrome.runtime)
+    if (!window.chrome) {
+        window.chrome = {};
+    }
+    if (!window.chrome.runtime) {
+        Object.defineProperty(window.chrome, 'runtime', {
+            get: () => ({ OnInstalledReason: {CHROME_UPDATE: "chrome_update"}, OnRestartRequiredReason: {APP_UPDATE: "app_update"} }),
+            configurable: true,
+        });
+    }
+
+    // Patch Webdriver property on document
+    Object.defineProperty(document, 'documentElement', {
+        get: () => {
+            const el = document.querySelector(':root');
+            if (el) {
+                el.setAttribute('webdriver', undefined);
+            }
+            return el;
+        },
+        configurable: true,
+    });
+})()
+"""
+
+
 class AgentBrowserTool(ToolBase):
     name = "agent_browser"
 
@@ -84,11 +149,21 @@ class AgentBrowserTool(ToolBase):
         headless: bool = False,
         executable: str = "agent-browser",
         browser_args: list[str] | None = None,
+        stealth: bool = True,
     ) -> None:
         self._download_dir = Path(download_dir)
         self._viewport = viewport
         self._headless = headless
+        self._stealth = stealth
         self._browser_args = browser_args or []
+        # Add default stealth args if stealth mode is on
+        if self._stealth:
+            _default_stealth_args = [
+                "--disable-blink-features=AutomationControlled",
+            ]
+            for arg in _default_stealth_args:
+                if arg not in self._browser_args:
+                    self._browser_args.insert(0, arg)
         # Resolve executable path (npm .cmd wrappers on Windows need shell or full path)
         resolved = shutil.which(executable)
         if resolved:
@@ -1421,6 +1496,8 @@ class AgentBrowserTool(ToolBase):
             await self._refresh_tabs()
             if url and url != "about:blank":
                 await self._exec("open", url, "--json")
+            if self._stealth:
+                await self._inject_stealth()
             return
         except Exception:
             pass
@@ -1434,6 +1511,17 @@ class AgentBrowserTool(ToolBase):
         _ = self._parse_data(result.stdout)
         self._started = True
         await self._refresh_tabs()
+        if self._stealth:
+            await self._inject_stealth()
+
+    async def _inject_stealth(self) -> None:
+        """Inject stealth scripts to mask automation indicators."""
+        if not self._started:
+            return
+        try:
+            await self._exec("eval", _STEALTH_JS, "--json")
+        except Exception:
+            pass
 
     async def _refresh_tabs(self) -> None:
         try:
