@@ -34,9 +34,12 @@ _TOOL_DESCRIPTION = (
     "2) Use those refs in action='click' / 'type' / 'fill' / 'hover' / 'drag' via the 'ref' field; "
     "3) Call action='screenshot' when visual verification is needed. "
     "If no ref is known, use 'target_text' for semantic text matching. "
-    "Navigation: action='navigate' with 'url'. "
+    "Navigation: action='navigate' with 'url', or 'back' / 'forward' / 'reload'. "
     "Tabs: action='tab_list' or action='tab_switch' with 'tab_index' (1-based). "
     "Checkbox: use action='check' or 'uncheck' with 'ref' (never click checkboxes). "
+    "Dropdown: use action='select' with 'ref' and 'value'. "
+    "File upload: use action='upload' with 'ref' and 'file_path'. "
+    "File download: use action='download' with 'ref' and 'save_path'. "
     "Drag and drop: action='drag' with 'ref'+'to_ref' or 'target_text'+'to_target_text'. "
     "Low-level mouse control: action='mouse' with 'mouse_action' (move/down/up/wheel). "
     "Use mouse sequences (move -> down -> move -> up) for interactions that standard click "
@@ -120,6 +123,9 @@ class AgentBrowserTool(ToolBase):
                         "type": "string",
                         "enum": [
                             "navigate",
+                            "back",
+                            "forward",
+                            "reload",
                             "snapshot",
                             "click",
                             "check",
@@ -131,6 +137,9 @@ class AgentBrowserTool(ToolBase):
                             "scroll",
                             "screenshot",
                             "extract",
+                            "select",
+                            "upload",
+                            "download",
                             "tab_list",
                             "tab_switch",
                             "tab_new",
@@ -238,6 +247,15 @@ class AgentBrowserTool(ToolBase):
                         "type": "boolean",
                         "description": "Add numbered labels to screenshot for vision model reference (action='screenshot' only).",
                     },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Option values for action='select' (dropdown).",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Local file path for action='upload' or target path for action='download'.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -273,6 +291,9 @@ class AgentBrowserTool(ToolBase):
     async def _dispatch(self, action: str, inp: dict[str, Any]) -> ToolResult:
         handlers: dict[str, Any] = {
             "navigate": self._do_navigate,
+            "back": self._do_back,
+            "forward": self._do_forward,
+            "reload": self._do_reload,
             "snapshot": self._do_snapshot,
             "click": self._do_click,
             "check": self._do_check,
@@ -284,6 +305,9 @@ class AgentBrowserTool(ToolBase):
             "scroll": self._do_scroll,
             "screenshot": self._do_screenshot,
             "extract": self._do_extract,
+            "select": self._do_select,
+            "upload": self._do_upload,
+            "download": self._do_download,
             "tab_list": self._do_tab_list,
             "tab_switch": self._do_tab_switch,
             "tab_new": self._do_tab_new,
@@ -333,6 +357,61 @@ class AgentBrowserTool(ToolBase):
             base64_image=image,
             details=details,
         )
+
+    async def _do_back(self, _inp: dict[str, Any]) -> ToolResult:
+        result = await self._exec("back", "--json")
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Navigated back\n{result.stdout[:1000]}", base64_image=image)
+
+    async def _do_forward(self, _inp: dict[str, Any]) -> ToolResult:
+        result = await self._exec("forward", "--json")
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Navigated forward\n{result.stdout[:1000]}", base64_image=image)
+
+    async def _do_reload(self, _inp: dict[str, Any]) -> ToolResult:
+        result = await self._exec("reload", "--json")
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Page reloaded\n{result.stdout[:1000]}", base64_image=image)
+
+    async def _do_select(self, inp: dict[str, Any]) -> ToolResult:
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        options = inp.get("options", [])
+        if not options:
+            return ToolResult(output="select requires 'options' array", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="select requires 'ref' or 'target_text'", is_error=True)
+        args = ["select", selector] + [str(o) for o in options] + ["--json"]
+        result = await self._exec(*args)
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Selected {options} on {selector}\n{result.stdout[:1000]}", base64_image=image)
+
+    async def _do_upload(self, inp: dict[str, Any]) -> ToolResult:
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        file_path = inp.get("file_path")
+        if not file_path:
+            return ToolResult(output="upload requires 'file_path'", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="upload requires 'ref' or 'target_text'", is_error=True)
+        result = await self._exec("upload", selector, file_path, "--json")
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Uploaded {file_path} to {selector}\n{result.stdout[:1000]}", base64_image=image)
+
+    async def _do_download(self, inp: dict[str, Any]) -> ToolResult:
+        ref = inp.get("ref")
+        target_text = inp.get("target_text")
+        save_path = inp.get("file_path") or inp.get("save_path")
+        if not save_path:
+            return ToolResult(output="download requires 'file_path' (save location)", is_error=True)
+        selector = ref or target_text
+        if not selector:
+            return ToolResult(output="download requires 'ref' or 'target_text'", is_error=True)
+        result = await self._exec("download", selector, save_path, "--json")
+        image = await self._take_screenshot()
+        return ToolResult(output=f"Downloaded to {save_path} from {selector}\n{result.stdout[:1000]}", base64_image=image)
 
     async def _do_snapshot(self, inp: dict[str, Any]) -> ToolResult:
         snapshot = await self._exec("snapshot", "--json")
