@@ -82,6 +82,9 @@ _TOOL_DESCRIPTION = (
     "Viewport: action='set_viewport' with 'width' and 'height' resizes the browser window. "
     "Device emulation: action='emulate_device' with 'device_name' (iPhone 14, Pixel 7, iPad Mini, reset) "
     "sets viewport, DPR, and user agent for mobile testing.\n"
+    "CDP raw access: action='cdp' with 'cdp_method' and optional 'cdp_params' sends arbitrary "
+    "Chrome DevTools Protocol commands via window.__openmimi_cdp_send. Use as an escape hatch "
+    "for CDP features not covered by other actions.\n"
     "Session persistence: action='save_session' with 'file_path' persists cookies/storage; "
     "action='load_session' with 'file_path' restores them to avoid repeated logins. "
     "Persistent profile: pass user_data_dir when creating the tool to reuse cookies, cache, "
@@ -423,6 +426,7 @@ class AgentBrowserTool(ToolBase):
                             "wait_for_navigation",
                             "wait_for_network_idle",
                             "emulate_device",
+                            "cdp",
                         ],
                         "description": "The browser action to perform.",
                     },
@@ -740,6 +744,7 @@ class AgentBrowserTool(ToolBase):
             "wait_for_navigation": self._do_wait_for_navigation,
             "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
+            "cdp": self._do_cdp,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1482,6 +1487,38 @@ class AgentBrowserTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"emulate_device failed: {exc}", is_error=True)
+
+    async def _do_cdp(self, inp: dict[str, Any]) -> ToolResult:
+        """Send an arbitrary CDP command via window.__openmimi_cdp_send."""
+        cdp_method = inp.get("cdp_method", "")
+        cdp_params = inp.get("cdp_params", {})
+        if not cdp_method:
+            return ToolResult(output="cdp requires 'cdp_method' (e.g. 'Runtime.evaluate')", is_error=True)
+        params_json = json.dumps(cdp_params, ensure_ascii=False)
+        js = f"""
+        (async () => {{
+            try {{
+                const result = await window.__openmimi_cdp_send({json.dumps(cdp_method)}, {params_json});
+                return {{ok: true, result}};
+            }} catch (e) {{
+                return {{error: e.message}};
+            }}
+        }})()
+        """
+        try:
+            result = await self._exec("eval", js, "--json")
+            data = self._parse_data(result.stdout)
+            result_value = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result_value, dict) and result_value.get("error"):
+                return ToolResult(
+                    output=f"CDP error: {result_value['error']}", is_error=True
+                )
+            return ToolResult(
+                output=json.dumps(result_value, ensure_ascii=False, indent=2)[:4000],
+                details={"cdp_method": cdp_method, "cdp_params": cdp_params},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"cdp failed: {exc}", is_error=True)
 
     async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         if screenshots_disabled():

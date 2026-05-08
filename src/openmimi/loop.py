@@ -160,6 +160,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  Use this after SPA navigation or clicks that trigger async data loading.\n"
     "- agent_browser set_viewport: resize the browser window with width/height for responsive testing.\n"
     "- agent_browser emulate_device: emulate mobile devices (iPhone 14, Pixel 7, iPad Mini) with proper UA and DPR.\n"
+    "- agent_browser cdp: send arbitrary Chrome DevTools Protocol commands with cdp_method and cdp_params. "
+    "  Use as an escape hatch for CDP features not exposed by other actions (e.g. Runtime.evaluate, DOM.querySelector).\n"
     "- agent_browser save_session / load_session: persist and restore cookies/storage to avoid repeated logins. "
     "  Uses CDP cookie APIs when available so HTTP-only cookies are preserved. Backward-compatible with legacy session files.\n"
     "  Prefer passing user_data_dir to the tool constructor for full profile persistence (IndexedDB, cache, extensions).\n"
