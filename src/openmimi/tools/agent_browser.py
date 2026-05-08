@@ -70,6 +70,9 @@ _TOOL_DESCRIPTION = (
     "sets viewport, DPR, and user agent for mobile testing.\n"
     "Session persistence: action='save_session' with 'file_path' persists cookies/storage; "
     "action='load_session' with 'file_path' restores them to avoid repeated logins. "
+    "Persistent profile: pass user_data_dir when creating the tool to reuse cookies, cache, "
+    "and extensions across sessions (more robust than save_session/load_session). "
+    "Proxy: pass proxy='http://host:port' when creating the tool to route traffic through a proxy.\n"
     "For multi-step atomic execution, use action='batch' with 'steps'."
 )
 
@@ -280,11 +283,15 @@ class AgentBrowserTool(ToolBase):
         executable: str = "agent-browser",
         browser_args: list[str] | None = None,
         stealth: bool = True,
+        proxy: str | None = None,
+        user_data_dir: str | None = None,
     ) -> None:
         self._download_dir = Path(download_dir)
         self._viewport = viewport
         self._headless = headless
         self._stealth = stealth
+        self._proxy = proxy
+        self._user_data_dir = Path(user_data_dir) if user_data_dir else None
         self._browser_args = browser_args or []
         # Add default stealth args if stealth mode is on
         if self._stealth:
@@ -294,6 +301,16 @@ class AgentBrowserTool(ToolBase):
             for arg in _default_stealth_args:
                 if arg not in self._browser_args:
                     self._browser_args.insert(0, arg)
+        # Proxy support
+        if self._proxy:
+            proxy_arg = f"--proxy-server={self._proxy}"
+            if proxy_arg not in self._browser_args:
+                self._browser_args.append(proxy_arg)
+        # Persistent profile (cookies, cache, extensions, IndexedDB)
+        if self._user_data_dir:
+            udd_arg = f"--user-data-dir={self._user_data_dir}"
+            if udd_arg not in self._browser_args:
+                self._browser_args.append(udd_arg)
         # Resolve executable path (npm .cmd wrappers on Windows need shell or full path)
         resolved = shutil.which(executable)
         if resolved:
