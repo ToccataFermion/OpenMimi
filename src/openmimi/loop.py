@@ -132,6 +132,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- agent_browser pdf: save the current page as a PDF file for archiving or review.\n"
     "- agent_browser console: capture recent browser console logs to debug JavaScript errors.\n"
     "- agent_browser clear_cache: wipe cookies, localStorage, and sessionStorage to reset state.\n"
+    "- agent_browser scroll_into_view: bring an element into the viewport before interacting with it.\n"
     "- agent_browser set_viewport: resize the browser window with width/height for responsive testing.\n"
     "- agent_browser save_session / load_session: persist and restore cookies/storage to avoid repeated logins.\n"
     "- computer list_windows: enumerate visible windows to find the right one before focus_window.\n"
