@@ -42,6 +42,7 @@ _TOOL_DESCRIPTION = (
     "- cursor_position: return current mouse cursor screen coordinates\n"
     "- focus_window title: bring the first window whose title contains 'title' to the foreground\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
+    "- key_combo keys: press multiple keys simultaneously (e.g. ['Control','c']).\n"
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle"
 )
@@ -256,6 +257,7 @@ class ComputerTool(ToolBase):
                             "cursor_position",
                             "focus_window",
                             "key_press",
+                            "key_combo",
                             "type",
                             "wait",
                         ],
@@ -281,6 +283,11 @@ class ComputerTool(ToolBase):
                     "key": {
                         "type": "string",
                         "description": "Key to press (Enter, Escape, Tab, etc.).",
+                    },
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of keys to press simultaneously for key_combo (e.g. ['Control','c']).",
                     },
                     "text": {
                         "type": "string",
@@ -331,6 +338,7 @@ class ComputerTool(ToolBase):
             "cursor_position": self._do_cursor_position,
             "focus_window": self._do_focus_window,
             "key_press": self._do_key_press,
+            "key_combo": self._do_key_combo,
             "type": self._do_type,
             "wait": self._do_wait,
         }
@@ -588,6 +596,26 @@ class ComputerTool(ToolBase):
         time.sleep(0.05)
         self._send_key_event(vk, True)
         return ToolResult(output=f"Key pressed: {key}")
+
+    async def _do_key_combo(self, inp: dict[str, Any]) -> ToolResult:
+        keys = inp.get("keys", [])
+        if not keys:
+            return ToolResult(output="key_combo requires 'keys' array", is_error=True)
+        vks = []
+        for key in keys:
+            vk = _VK_MAP.get(str(key).lower())
+            if vk is None:
+                return ToolResult(output=f"Unknown key in combo: {key}", is_error=True)
+            vks.append(vk)
+        # Press all down
+        for vk in vks:
+            self._send_key_event(vk, False)
+            time.sleep(0.02)
+        # Release all up (reverse order)
+        for vk in reversed(vks):
+            self._send_key_event(vk, True)
+            time.sleep(0.02)
+        return ToolResult(output=f"Key combo pressed: {'+'.join(keys)}")
 
     async def _do_type(self, inp: dict[str, Any]) -> ToolResult:
         text = str(inp.get("text", ""))
