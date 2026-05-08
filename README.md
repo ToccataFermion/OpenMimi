@@ -1,55 +1,165 @@
 # OpenMimi
 
-> Local Windows AI Agent that operates browsers and desktop applications via vision-based tool use, in the Anthropic `tool_use` / `tool_result` style.
+Local Windows AI Agent powered by Anthropic's tool_use protocol.
 
-OpenMimi is an Agent that runs on your Windows machine and can:
+OpenMimi connects an LLM to a rich set of browser and desktop automation tools,
+allowing the AI to navigate websites, fill forms, solve CAPTCHAs, control the
+Windows desktop, read screen text via OCR, and manage windows.
 
-- Operate any website inside a browser (built on top of `browser-use`)
-- Operate most desktop applications via vision + input injection (planned, M2)
-- Persist sessions, audit every tool call, and replay actions later
+## Architecture
 
-## Status
+```
+LLM <-> sampling_loop <-> ToolCollection
+                        |
+            +-----------+-----------+
+            |                       |
+    AgentBrowserTool         ComputerTool
+    (Chromium/CDP)           (Windows Desktop)
+```
 
-Early development.
+- **`loop.py`**: LLM-driven sampling loop with tool_use / tool_result protocol
+- **`AgentBrowserTool`**: Wraps vercel-labs/agent-browser Rust CLI for Chromium automation
+- **`ComputerTool`**: Windows desktop automation via mss screenshots + SendInput
+- **`ToolCollection`**: Unified registration and dispatch
 
-- M1: **Browser-Only Agent** (in progress)
-- M2: **Computer-Use** (vision-based, Windows-native)
-- M3: long-term memory with vector retrieval
-- M4: stability, hand-off and observability
-- M5: sandbox for untrusted code / pages / downloads
-
-See `docs/SDD.md` (work in progress) for the full design document.
-
-## Requirements
-
-- Windows 10 or 11
-- Python 3.11+
-- [uv](https://github.com/astral-sh/uv) for dependency management
-- An Anthropic API key (or compatible provider) for the LLM
-
-## Quickstart (M1, work in progress)
+## Quick Start
 
 ```bash
-uv sync
+pip install -e .
 
-copy .env.example .env
-# edit .env to set ANTHROPIC_API_KEY=...
+# Set credentials for xft demo (optional)
+export XFT_PHONE="your_phone"
+export XFT_PASSWORD="your_password"
 
-uv run openmimi run "Search for the latest Anthropic blog post and summarize it."
+# Run the advanced xft login demo
+python scripts/xft_advanced_login.py
 ```
 
-## Architecture (high level)
+## Browser Capabilities
 
-OpenMimi follows the Anthropic `tool_use` / `tool_result` loop. The LLM proposes actions; tools execute them locally; every step returns a fresh screenshot back to the model.
+### Navigation & Interaction
+| Action | Description |
+|--------|-------------|
+| `navigate` | Load a URL |
+| `back` / `forward` / `reload` | Browser navigation |
+| `click` | Click by accessibility ref or text match |
+| `check` / `uncheck` | Toggle checkboxes (never click them) |
+| `type` / `fill` | Type text into inputs |
+| `press` | Press a key (Enter, Escape, Tab, etc.) |
+| `hover` | Hover over an element |
+| `scroll` | Scroll the page |
+| `drag` | Drag and drop between elements |
+| `select` | Select dropdown options |
+| `upload` | Upload a file |
+| `download` | Download a file |
 
+### Page Analysis
+| Action | Description |
+|--------|-------------|
+| `snapshot` | Accessibility tree with @eN refs |
+| `screenshot` | Capture viewport (with optional annotation) |
+| `extract` | Structured extraction: text, headings, links, forms, tables, metadata, images |
+| `page_source` | Raw HTML of the current page |
+| `get_box` | Element bounding box for OS-level mouse coordination |
+| `scroll_into_view` | Bring element into viewport |
+| `wait_for` | Poll until element/text appears |
+| `wait_for_navigation` | Wait for URL change after SPA navigation |
+
+### Network & Debugging
+| Action | Description |
+|--------|-------------|
+| `network_log` | Intercept fetch/XHR requests |
+| `network_modify` | Inject headers, block URLs, mock responses, override UA |
+| `console` | Capture recent browser console logs |
+| `pdf` | Save page as PDF |
+| `eval` | Evaluate JavaScript and return result |
+| `batch` | Execute multiple commands atomically |
+
+### Tabs & Session
+| Action | Description |
+|--------|-------------|
+| `tab_list` / `tab_switch` / `tab_new` / `tab_close` | Tab management |
+| `save_session` / `load_session` | JSON-based cookie/storage persistence |
+| `clear_cache` | Wipe cookies, localStorage, sessionStorage |
+| `storage` | Read/write localStorage, sessionStorage, cookies |
+
+### Anti-Detection & Stealth
+| Feature | Description |
+|---------|-------------|
+| `stealth` mode | 14-vector JS anti-detection injection |
+| `emulate_device` | Mobile emulation: iPhone 14, Pixel 7, iPad Mini |
+| `proxy` | Route traffic through proxy server |
+| `user_data_dir` | Persistent Chrome profile (IndexedDB, cache, extensions) |
+| `screenshot_scale` | Scale screenshots to reduce LLM token usage |
+| Auto-retry | Exponential backoff for transient CDP failures |
+| Auto-screenshot-on-error | Captures state on failure for debugging |
+
+## ComputerUse Capabilities
+
+| Action | Description |
+|--------|-------------|
+| `screenshot` | Capture primary monitor |
+| `mouse_move` / `mouse_click` / `mouse_drag` | Mouse control with human-like trajectories |
+| `mouse_scroll` / `mouse_double_click` | Extended mouse actions |
+| `key_press` / `key_combo` / `type` | Keyboard input (Unicode-aware via clipboard paste) |
+| `cursor_position` | Get current mouse coordinates |
+| `focus_window` / `window_manage` | Window focus, move, resize, minimize, maximize, close |
+| `list_windows` | Enumerate visible windows |
+| `locate` | OpenCV template matching on screen |
+| `ocr` | Tesseract OCR for text extraction (chi_sim+eng supported) |
+| `clipboard` | Read/write system clipboard |
+| `launch` | Start applications by name or path |
+| `file` | Read/write files on disk |
+| `get_screen_info` | Primary monitor resolution and DPI |
+| `shell` | Execute shell commands with timeout |
+
+## System Prompt
+
+The default system prompt (`loop.py`) includes detailed guidance for:
+- Browser automation best practices
+- React SPA click fallbacks
+- xft.cmbchina.com login flow and CAPTCHA solving
+- Slider CAPTCHA physics (scaling factor, slow drag, OS-level events)
+- Tool timeout configuration (`OPENMIMI_TOOL_TIMEOUT_S`)
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `XFT_PHONE` | Phone number for xft login | (fallback in scripts) |
+| `XFT_PASSWORD` | Password for xft login | (fallback in scripts) |
+| `OPENMIMI_TOOL_TIMEOUT_S` | Per-tool timeout (seconds) | 300 |
+| `OPENMIMI_BROWSER_TRACE` | Print browser phase timings | off |
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/solve_captcha_dl.py` | Basic xft login with DL CAPTCHA solver |
+| `scripts/explore_xft_workbench.py` | Workbench exploration after login |
+| `scripts/xft_advanced_login.py` | Production-grade login with all features |
+
+## xft.cmbchina.com CAPTCHA
+
+The slider CAPTCHA on xft.cmbchina.com requires:
+1. **Scaling factor**: Handle drag = puzzle_gap × 280/262 ≈ 1.069
+2. **Slow drag**: steps=80, delay_ms=25 (≈2 seconds total)
+3. **OS-level events**: Use `computer.mouse_drag` with exact screen coordinates
+4. **Gap detection**: `captcha-recognizer` ONNX YOLO model (confidence ≥0.96)
+
+## Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Syntax check
+python -m py_compile src/openmimi/tools/*.py
+
+# Run a script
+PYTHONPATH=src python scripts/xft_advanced_login.py
 ```
-User -> Orchestrator -> Sampling Loop <-> LLM
-                            |
-                            +-> Tools: browser, computer (M2), files, memory
-```
-
-The browser tool is a thin adapter around the upstream `browser-use` package. We depend on it via pip / uv so that future upgrades stay simple.
 
 ## License
 
-Apache-2.0 (see [LICENSE](./LICENSE)).
+MIT
