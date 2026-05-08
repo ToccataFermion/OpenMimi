@@ -354,13 +354,13 @@ async def solve_captcha(browser: AgentBrowserTool, computer: ComputerTool) -> bo
         log("Could not get handle position")
         return False
 
-    # Method 1: Edge-based
-    gap = await get_gap_edge(browser)
+    # Method 1: Pixeldiff (empirically most accurate)
+    gap = await get_gap_pixeldiff(browser)
     if gap is not None:
         handle_drag = int(gap * 280 / 262)
-        log(f"\nEdge suggests handle_drag={handle_drag}px")
+        log(f"\nPixeldiff suggests handle_drag={handle_drag}px")
         if await try_drag(browser, computer, sx, sy, handle_drag):
-            log("SUCCESS with edge!")
+            log("SUCCESS with pixeldiff!")
             return True
         for offset in [-10, 10, -20, 20]:
             if await try_drag(browser, computer, sx, sy, handle_drag + offset):
@@ -368,13 +368,13 @@ async def solve_captcha(browser: AgentBrowserTool, computer: ComputerTool) -> bo
                 return True
             await asyncio.sleep(1.0)
 
-    # Method 2: Pixeldiff
-    gap = await get_gap_pixeldiff(browser)
+    # Method 2: Edge-based
+    gap = await get_gap_edge(browser)
     if gap is not None:
         handle_drag = int(gap * 280 / 262)
-        log(f"\nPixeldiff suggests handle_drag={handle_drag}px")
+        log(f"\nEdge suggests handle_drag={handle_drag}px")
         if await try_drag(browser, computer, sx, sy, handle_drag):
-            log("SUCCESS with pixeldiff!")
+            log("SUCCESS with edge!")
             return True
         for offset in [-10, 10, -20, 20]:
             if await try_drag(browser, computer, sx, sy, handle_drag + offset):
