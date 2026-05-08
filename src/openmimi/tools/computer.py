@@ -48,6 +48,8 @@ _TOOL_DESCRIPTION = (
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle\n"
     "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)\n"
+    "- click_image template_path [confidence=0.8] [button=left|right]: find template image on screen and click its center. "
+    "Useful for clicking icons, buttons, or UI elements in native apps when coordinates are unknown.\n"
     "- list_windows: enumerate all visible windows with titles and positions\n"
     "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard\n"
     "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
@@ -277,6 +279,7 @@ class ComputerTool(ToolBase):
                             "type",
                             "wait",
                             "locate",
+                            "click_image",
                             "list_windows",
                             "clipboard",
                             "launch",
@@ -341,11 +344,11 @@ class ComputerTool(ToolBase):
                     },
                     "template_path": {
                         "type": "string",
-                        "description": "Path to a template image for locate action (PNG/JPG).",
+                        "description": "Path to a template image for locate or click_image action (PNG/JPG).",
                     },
                     "confidence": {
                         "type": "number",
-                        "description": "Minimum confidence threshold for locate (0.0-1.0, default 0.8).",
+                        "description": "Minimum confidence threshold for locate/click_image (0.0-1.0, default 0.8).",
                     },
                     "clipboard_action": {
                         "type": "string",
@@ -432,6 +435,7 @@ class ComputerTool(ToolBase):
             "type": self._do_type,
             "wait": self._do_wait,
             "locate": self._do_locate,
+            "click_image": self._do_click_image,
             "list_windows": self._do_list_windows,
             "clipboard": self._do_clipboard,
             "launch": self._do_launch,
@@ -760,6 +764,49 @@ class ComputerTool(ToolBase):
             )
         except Exception as exc:
             return ToolResult(output=f"Locate error: {exc}", is_error=True)
+
+    async def _do_click_image(self, inp: dict[str, Any]) -> ToolResult:
+        """Find a template image on the screen and click its center."""
+        template_path = str(inp.get("template_path", ""))
+        confidence = float(inp.get("confidence", 0.8))
+        button = str(inp.get("button", "left")).lower()
+        if not template_path:
+            return ToolResult(output="click_image requires 'template_path'", is_error=True)
+        try:
+            import cv2
+            import numpy as np
+        except ImportError as exc:
+            return ToolResult(output=f"click_image requires opencv-python: {exc}", is_error=True)
+
+        try:
+            sct = self._ensure_mss()
+            raw = sct.grab(sct.monitors[1])
+            import mss.tools
+            png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+            screen = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
+            template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+            if screen is None:
+                return ToolResult(output="Failed to capture screen", is_error=True)
+            if template is None:
+                return ToolResult(output=f"Failed to load template: {template_path}", is_error=True)
+
+            result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            if max_val < confidence:
+                return ToolResult(
+                    output=f"Template not found (best confidence: {max_val:.3f}, threshold: {confidence})",
+                    is_error=True,
+                )
+            h, w = template.shape[:2]
+            cx = max_loc[0] + w // 2
+            cy = max_loc[1] + h // 2
+            self._mouse_click(cx, cy, button=button)
+            return ToolResult(
+                output=f"Clicked template at ({cx}, {cy}) with confidence {max_val:.3f}",
+                details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"click_image error: {exc}", is_error=True)
 
     async def _do_list_windows(self, _inp: dict[str, Any]) -> ToolResult:
         """List all visible windows with their titles and positions."""
