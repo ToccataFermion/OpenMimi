@@ -105,6 +105,29 @@ def _read_chat_line(prompt: str) -> str:
     return input(prompt)
 
 
+def _mimi_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("openmimi")
+    except Exception:
+        return "0.0.1"
+
+
+def _print_welcome(session_id: str) -> None:
+    ver = _mimi_version()
+    logo = rf"""
+    /\_____/\
+   /  o   o  \    OpenMimi  v{ver}
+  (    >.<    )   Local Windows AI Agent
+   \  \___/  /
+    \_______/
+"""
+    print(logo)
+    print(f"  session : {session_id}")
+    print(f"  tips    : 输入任务开始，/exit 或 Ctrl+C 退出")
+    print()
+
+
 @app.command()
 def chat(
     no_screenshots: bool = typer.Option(
@@ -128,11 +151,7 @@ def chat(
     async def _runner() -> None:
         session_id = new_session_id()
         messages: list[dict[str, Any]] = []
-        typer.echo(
-            f"多轮对话（同一浏览器与 session，审计写入同一 jsonl）\n"
-            f"session={session_id}\n"
-            f"退出：/exit、/quit 或 Ctrl+C（会关闭浏览器）\n"
-        )
+        _print_welcome(session_id)
         try:
             while True:
                 try:
@@ -236,11 +255,7 @@ def chat_main() -> None:
     async def _runner() -> None:
         session_id = new_session_id()
         messages: list[dict[str, Any]] = []
-        print(
-            f"多轮对话（同一浏览器与 session，审计写入同一 jsonl）\n"
-            f"session={session_id}\n"
-            f"退出：/exit、/quit 或 Ctrl+C（会关闭浏览器）\n"
-        )
+        _print_welcome(session_id)
         try:
             while True:
                 try:
