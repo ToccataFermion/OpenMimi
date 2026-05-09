@@ -3399,7 +3399,7 @@ class AgentBrowserTool(ToolBase):
         js = """
         (() => {
             const selectors = [
-                '.xftImageVerify', '.imageVerifyDragButton', '.bottomImage',
+                '.imageVerifyDragButton', '.bottomImage',
                 '.dragImage', '.imageVerify',
                 '.geetest_holder', '.geetest_box', '.geetest_widget',
                 '#captcha', '.captcha',

@@ -483,7 +483,7 @@ class BrowserTool(ToolBase):
 
         The CDP ``Input.dispatchMouseEvent`` response can stall indefinitely
         when the click triggers ``window.open`` or similar cross-target side
-        effects (observed on xft.cmbchina.com). The mousedown is almost always
+        effects (e.g. login portals that open ``window.open``). The mousedown is almost always
         already dispatched, so we swallow the timeout and continue rather than
         freezing the agent until the outer tool timeout fires.
 

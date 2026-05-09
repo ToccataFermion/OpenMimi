@@ -14,7 +14,7 @@ async def main():
     tool = BrowserTool(download_dir=download_dir, headless=False)
 
     try:
-        await tool({"action": "navigate", "url": "https://xft.cmbchina.com/"})
+        await tool({"action": "navigate", "url": "https://example.com/"})
         await asyncio.sleep(1.0)
 
         page = await tool._maybe_get_page()

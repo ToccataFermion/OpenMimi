@@ -9,63 +9,7 @@ OpenMimi 是一个基于 Anthropic tool_use 协议的本地 Windows AI Agent。�
 - **ComputerTool** (`computer.py`): Windows 桌面级自动化 (mss 截图 + SendInput)
 - **工具集合** (`collection.py`): 统一注册和调度
 
-## 2. xft.cmbchina.com 登录流程攻克
-
-### 2.1 问题背景
-
-xft.cmbchina.com 是招商银行小企业金融平台。登录流程复杂：
-
-1. 首页点击"登录"打开表单
-2. 填写手机号 + 密码
-3. 提交后出现滑块验证码
-4. 验证码通过后进入工作台
-
-### 2.2 关键技术难点
-
-**React SPA 点击不响应**
-- 标准 `element.click()` 无法触发页面跳转
-- 解决：使用 CDP 级别的 `Input.dispatchMouseEvent` (force=true)
-
-**表单填写被 React 覆盖**
-- 直接设置 `input.value` 后 React 组件不感知
-- 解决：使用 `HTMLInputElement.prototype.value` 的 property descriptor setter，然后 dispatch `input` + `change` 事件
-
-```javascript
-const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-valueSetter.call(element, value);
-element.dispatchEvent(new Event('input', { bubbles: true }));
-element.dispatchEvent(new Event('change', { bubbles: true }));
-```
-
-**滑块验证码**
-- 背景图 340px，拼图 78px，把手 60px
-- 关键发现：把手移动距离 ≠ 拼图移动距离
-- 缩放系数：`handle_drag = puzzle_gap * 280 / 262 ≈ 1.069`
-- 拖动必须用 OS 级 `SendInput` 产生 `isTrusted=true` 事件
-- 拖动必须慢（steps=80, delay_ms=25，约 2 秒），让 JS 跟踪轨迹
-
-### 2.3 验证码解法演进
-
-| 阶段 | 方法 | 成功率 | 说明 |
-|------|------|--------|------|
-| v1 | 人工观察截图估算 | ~30% | 耗时，不准确 |
-| v2 | Pixeldiff 像素差分 | ~50% | Canvas 逐像素比较，找最大差异偏移 |
-| v3 | **DL 深度学习** (captcha-recognizer) | **~95%** | ONNX YOLO 实例分割，置信度 0.96+ |
-| fallback | 暴力枚举 | 100% (最终) | 80-260px 步进 15px |
-
-DL 解法流程：
-1. 截图 → 裁剪到验证码弹窗区域
-2. `Slider().identify_offset(crop_path)` 返回缺口偏移量
-3. 应用缩放系数得到把手拖动距离
-4. ±10px 容错尝试
-
-### 2.4 发现：登录后无认证态
-
-探索发现 xft.cmbchina.com 前台是公开营销页面。即使"登录成功"，导航栏也只有公开内容（关于我们、新闻资讯、帮助中心），未捕获到 token/cookie 等认证凭证。可能原因：
-- 前台展示与实际业务系统分离
-- 需要额外的企业认证才能访问真实工作台
-
-## 3. 新增工具能力
+## 2. 新增工具能力
 
 ### 3.1 AgentBrowserTool 新增动作（第一批次）
 
@@ -120,28 +64,21 @@ DL 解法流程：
 
 ### 3.5 Loop 系统提示词增强
 
-- 完整的 xft 登录流程指南
+- 常见登录与滑块验证码的通用操作说明（站点无关）
 - CAPTCHA 缩放系数和视觉分析指南
 - 所有新工具的能力说明
 - 工具超时配置（`OPENMIMI_TOOL_TIMEOUT_S`）
 
 ## 4. 安全修复
 
-- 发现数十个脚本硬编码了测试凭据（手机号/密码）
-- 已提交到 GitHub 的历史中仍存在（commit 604cbce）
-- 修复方案：使用 `os.environ.get('XFT_PHONE', '...')` + `os.environ.get('XFT_PASSWORD', '...')`
-- 通过 Python f-string 注入到 browser-eval JS 中（process.env 在浏览器环境不可用）
-- 两个活跃脚本已修复并推送
+- 曾发现部分脚本硬编码测试凭据；已改为环境变量或移除演示脚本
+- 历史提交中可能仍保留敏感信息，部署前请轮换凭据并审计仓库历史
 
-## 5. 脚本更新
+## 5. 脚本与仓库整理
 
-- `scripts/xft_advanced_login.py`: 综合演示所有新能力的生产级脚本
-  - persistent profile + stealth headers + network_modify
-  - wait_for 替代固定 sleep
-  - 结构化 extraction 替代 raw eval
-  - page_source 调试 fallback
+- 站点专用的验证码/登录演示脚本已从本仓库移除，避免与通用 Agent 代码耦合；集成测试请放在自有仓库或 CI 私密配置中。
 
-## 4. 新增工具能力（第三批次，2026-05-08）
+## 6. 新增工具能力（第三批次，2026-05-08）
 
 ### 4.1 AgentBrowserTool
 
@@ -171,7 +108,7 @@ DL 解法流程：
 |------|------|
 | `click_image` | OpenCV 模板匹配找到屏幕图像并点击其中心 |
 
-## 5. 新增工具能力（第四批次，2026-05-08）
+## 7. 新增工具能力（第四批次，2026-05-08）
 
 ### 5.1 ComputerTool
 
@@ -203,25 +140,25 @@ DL 解法流程：
 - 完成 Camoufox 及替代方案调研，详细报告见 `docs/camoufox_research_2026.md`
 - **关键发现**：Rebrowser 的 `Runtime.enable` CDP 补丁是当前最具工程价值的反检测方案；Camoufox 处于重建期，尚未恢复生产级稳定性
 
-## 6. 脚本更新
+## 8. 脚本与工具链
 
-- `scripts/xft_advanced_login.py` 已迁移至 `react_fill`，移除内联 `setReactValue` eval JS
+- 演示用登录脚本已迁出本仓库；`react_fill` 等能力以源码与单元测试为准。
 
-## 7. 下一步方向
+## 9. 下一步方向
 
-### 7.1 高优先级
+### 9.1 高优先级
 
-1. **测试验证** - 在真实环境运行 xft_advanced_login.py 验证所有新功能
+1. **测试验证** - 扩充 `tests/` 覆盖关键浏览器与桌面路径
 2. **Vision-based 元素定位** - 减少对 DOM 的依赖，用 VLM 理解页面视觉布局
 3. **AI 驱动的自愈选择器** - 元素变更时自动找到等效元素
 
-### 7.2 中优先级
+### 9.2 中优先级
 
 4. **行为级反检测增强** - 模拟人类阅读模式（滚动停顿、鼠标徘徊）
 5. **Camoufox 集成评估** - 已完成初步调研（见 `docs/camoufox_research_2026.md`）。结论：Camoufox 2026 年处于 Clover Labs 接管后的重建期，仍为实验性；更值得关注的是 Rebrowser（修复 `Runtime.enable` CDP 检测）和 Patchright（Playwright 即插即用替代）
 6. **Screen region actions** - 对 OCR 识别的区域直接执行点击/输入（click_image 已覆盖视觉场景）
 
-### 7.3 长期
+### 9.3 长期
 
 7. **多模态理解** - 结合截图 + DOM + OCR 进行联合推理
 8. **自动重试与恢复** - 智能检测失败原因并自动调整策略重试

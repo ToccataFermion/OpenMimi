@@ -39,15 +39,6 @@ openmimi replay <id>   # Replay a session
 > **Development mode** (no install needed):  
 > On Windows, double-click `mimi.bat` in the project folder, or run `python -m openmimi`.
 
-```bash
-# Set credentials for xft demo (optional)
-export XFT_PHONE="your_phone"
-export XFT_PASSWORD="your_password"
-
-# Run the advanced xft login demo
-python scripts/xft_advanced_login.py
-```
-
 ## Browser Capabilities
 
 ### Navigation & Interaction
@@ -151,7 +142,6 @@ python scripts/xft_advanced_login.py
 The default system prompt (`loop.py`) includes detailed guidance for:
 - Browser automation best practices
 - React SPA click fallbacks and `react_fill` for controlled inputs
-- xft.cmbchina.com login flow and CAPTCHA solving
 - Slider CAPTCHA physics (scaling factor, slow drag, OS-level events)
 - Tool timeout configuration (`OPENMIMI_TOOL_TIMEOUT_S`)
 
@@ -159,26 +149,20 @@ The default system prompt (`loop.py`) includes detailed guidance for:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `XFT_PHONE` | Phone number for xft login | (fallback in scripts) |
-| `XFT_PASSWORD` | Password for xft login | (fallback in scripts) |
 | `OPENMIMI_TOOL_TIMEOUT_S` | Per-tool timeout (seconds) | 300 |
 | `OPENMIMI_BROWSER_TRACE` | Print browser phase timings | off |
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/solve_captcha_dl.py` | Basic xft login with DL CAPTCHA solver |
-| `scripts/explore_xft_workbench.py` | Workbench exploration after login |
-| `scripts/xft_advanced_login.py` | Production-grade login with all features |
+Utility and integration scripts may live under `scripts/` in downstream forks; this upstream repo keeps the core package and `tests/` only.
 
-## xft.cmbchina.com CAPTCHA
+## Slider CAPTCHA (general)
 
-The slider CAPTCHA on xft.cmbchina.com requires:
-1. **Scaling factor**: Handle drag = puzzle_gap × 280/262 ≈ 1.069
-2. **Slow drag**: steps=80, delay_ms=25 (≈2 seconds total)
-3. **OS-level events**: Use `computer.mouse_drag` with exact screen coordinates
-4. **Gap detection**: `captcha-recognizer` ONNX YOLO model (confidence ≥0.96)
+Many sites use slider or jigsaw CAPTCHAs. Practical notes for agents:
+1. **Scaling factor**: handle drag distance may differ from puzzle gap (measure per site).
+2. **Slow drag**: use many small steps with delays so client-side JS can track the pointer.
+3. **OS-level events**: some checks require `isTrusted` mouse events from the OS layer (`ComputerTool`).
+4. **Gap detection**: vision models or dedicated CV/ML pipelines can estimate the gap offset; tune confidence thresholds per integration.
 
 ## Development
 
@@ -189,8 +173,8 @@ pip install -r requirements.txt
 # Syntax check
 python -m py_compile src/openmimi/tools/*.py
 
-# Run a script
-PYTHONPATH=src python scripts/xft_advanced_login.py
+# Run unit tests
+PYTHONPATH=src pytest tests/
 ```
 
 ## License
