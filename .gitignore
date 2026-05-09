@@ -222,8 +222,6 @@ __marimo__/
 
 # Browser test artifacts
 *.png
-xft_browser_profile/
-xft_*.txt
 gap_*.png
 bg_edges.png
 slider_*.png
