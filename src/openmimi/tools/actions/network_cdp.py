@@ -183,6 +183,7 @@ async def network_log(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolRe
         return ToolResult(
             output=json.dumps(data, ensure_ascii=False, indent=2)[:4000],
             details={"requests": requests},
+            structured={"requests": requests},
         )
     except Exception as exc:
         return ToolResult(

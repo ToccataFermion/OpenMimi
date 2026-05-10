@@ -293,7 +293,10 @@ async def extract(
         )
         data = engine._parse_data(result.stdout)
         text = data.get("result", "")
-        return ToolResult(output=text[:4000])
+        return ToolResult(
+            output=text[:4000],
+            structured={"instruction": "get text", "data": text},
+        )
 
     if instruction == "headings":
         js = """
@@ -382,7 +385,11 @@ async def extract(
         data = engine._parse_data(result.stdout)
         result_value = data.get("result") if isinstance(data, dict) else None
         output = json.dumps(result_value, ensure_ascii=False, indent=2)
-        return ToolResult(output=output[:4000], details={"instruction": instruction})
+        return ToolResult(
+            output=output[:4000],
+            details={"instruction": instruction},
+            structured={"instruction": instruction, "data": result_value},
+        )
     except Exception as exc:
         return ToolResult(output=f"extract failed: {exc}", is_error=True)
 
@@ -410,6 +417,7 @@ async def get_box(
         return ToolResult(
             output=json.dumps(box, ensure_ascii=False, indent=2),
             details={"box": box, "selector": selector},
+            structured={"box": box, "selector": selector},
         )
     except Exception as exc:
         return ToolResult(
@@ -466,6 +474,7 @@ async def is_visible(
             return ToolResult(
                 output=f"Visible: {visible}",
                 details=result_value,
+                structured=result_value,
             )
         return ToolResult(
             output="is_visible returned unexpected format", is_error=True

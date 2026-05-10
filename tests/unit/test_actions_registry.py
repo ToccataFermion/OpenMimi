@@ -1,6 +1,7 @@
 """Tests for the actions/ registry that backs AgentBrowserTool dispatch."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -1339,5 +1340,119 @@ async def test_set_geolocation_with_coords_sets_override() -> None:
     assert "31.23" in result.output and "121.47" in result.output
     assert "Emulation.setGeolocationOverride" in payloads[0]
     assert "31.23" in payloads[0] and "121.47" in payloads[0]
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 #12 — structured ToolResult payload
+#
+# These tests pin down the contract that selected handlers populate
+# ``ToolResult.structured`` alongside the existing string ``output``. The
+# field is for programmatic consumers (planner / sub-agents) so they don't
+# have to re-parse the JSON the handler already constructed in-memory.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_result_structured_defaults_to_none() -> None:
+    from openmimi.tools.result import ToolResult
+
+    r = ToolResult(output="hi")
+    assert r.structured is None
+
+
+@pytest.mark.asyncio
+async def test_extract_get_text_populates_structured() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout='{"result":"hello world"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": "hello world"}
+
+    result = await actions.get("extract")(_Engine(), {"instruction": "get text"})
+    assert result.structured == {"instruction": "get text", "data": "hello world"}
+
+
+@pytest.mark.asyncio
+async def test_extract_links_populates_structured_with_list() -> None:
+    from openmimi.tools import actions
+
+    rows = [
+        {"text": "Home", "href": "https://example.com/"},
+        {"text": "Docs", "href": "https://example.com/docs"},
+    ]
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout=json.dumps({"result": rows}))
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": rows}
+
+    result = await actions.get("extract")(_Engine(), {"instruction": "links"})
+    assert result.is_error is False
+    assert result.structured is not None
+    assert result.structured["instruction"] == "links"
+    assert result.structured["data"] == rows
+
+
+@pytest.mark.asyncio
+async def test_get_box_populates_structured_with_box() -> None:
+    from openmimi.tools import actions
+
+    box = {"x": 10, "y": 20, "width": 100, "height": 30}
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout=json.dumps({"box": box}))
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"box": box}
+
+    result = await actions.get("get_box")(_Engine(), {"ref": "@e7"})
+    assert result.is_error is False
+    assert result.structured == {"box": box, "selector": "@e7"}
+
+
+@pytest.mark.asyncio
+async def test_is_visible_populates_structured_with_result_value() -> None:
+    from openmimi.tools import actions
+
+    rv = {"visible": True, "tag": "DIV", "rect": {"x": 0, "y": 0, "width": 5, "height": 5}}
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout=json.dumps({"result": rv}))
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": rv}
+
+    result = await actions.get("is_visible")(_Engine(), {"ref": "@e2"})
+    assert result.is_error is False
+    assert result.structured == rv
+
+
+@pytest.mark.asyncio
+async def test_network_log_populates_structured_with_requests() -> None:
+    from openmimi.tools import actions
+
+    requests = [
+        {"url": "https://api.example.com/x", "status": 200, "method": "GET"},
+        {"url": "https://api.example.com/y", "status": 404, "method": "POST"},
+    ]
+    calls: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            calls.append(args)
+            return SimpleNamespace(stdout=json.dumps({"requests": requests}))
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"requests": requests}
+
+    result = await actions.get("network_log")(_Engine(), {"duration_ms": 0})
+    assert result.is_error is False
+    assert result.structured == {"requests": requests}
 
 
