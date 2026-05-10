@@ -31,6 +31,10 @@ from .tools import (
     CodeTool,
     ComputerTool,
     FileTool,
+    MemoryGrepTool,
+    MemoryListTool,
+    MemoryReadTool,
+    MemoryWriteTool,
     ShellTool,
     ToolCollection,
 )
@@ -215,6 +219,13 @@ class Orchestrator:
         tools.register(ShellTool())
         tools.register(FileTool())
         tools.register(CodeTool())
+        # Memory v2 (#9 stage 3) — give the LLM grep / read / write / list
+        # access to data/memory/{episodic,sites,skills}. Episodic is
+        # system-managed (loop appends); sites + skills are LLM-writable.
+        tools.register(MemoryGrepTool())
+        tools.register(MemoryReadTool())
+        tools.register(MemoryWriteTool())
+        tools.register(MemoryListTool())
 
         audit = JsonlAuditLogger(
             audit_dir=cfg.storage.audit_dir,
