@@ -25,3 +25,12 @@ class ToolCollection:
     async def close_all(self) -> None:
         for tool in self._tools.values():
             await tool.close()
+
+    def names(self) -> list[str]:
+        return list(self._tools.keys())
+
+    def get(self, name: str) -> ToolBase | None:
+        return self._tools.get(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._tools
