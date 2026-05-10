@@ -756,3 +756,156 @@ def test_appconfig_compression_strategy_accepts_summarize() -> None:
 
     cfg = AppConfig(compression_strategy="summarize")
     assert cfg.compression_strategy == "summarize"
+
+
+# --- compress_tool_result / estimate_tokens (roadmap #5 stage 2) ----------
+
+
+def test_estimate_tokens_returns_zero_for_empty() -> None:
+    from openmimi.compression import estimate_tokens
+
+    assert estimate_tokens("") == 0
+
+
+def test_estimate_tokens_uses_4_char_heuristic() -> None:
+    from openmimi.compression import estimate_tokens
+
+    assert estimate_tokens("a" * 16) == 4
+    assert estimate_tokens("a" * 100) == 25
+
+
+def test_estimate_tokens_returns_at_least_one_for_short_text() -> None:
+    """`max(1, len // 4)` keeps callers safe from divide-by-zero math."""
+    from openmimi.compression import estimate_tokens
+
+    assert estimate_tokens("hi") == 1
+    assert estimate_tokens("x") == 1
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_returns_short_text_untouched() -> None:
+    from openmimi.compression import compress_tool_result
+
+    out = await compress_tool_result("tiny", llm=None, target_chars=500)
+    assert out == "tiny"
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_truncates_when_no_llm() -> None:
+    from openmimi.compression import compress_tool_result
+
+    text = "x" * 2000
+    out = await compress_tool_result(text, llm=None, target_chars=100)
+    assert out.startswith("x" * 100)
+    assert "[truncated" in out
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_calls_llm_for_long_text() -> None:
+    from openmimi.compression import compress_tool_result
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Did: navigated to homepage\n"
+                            "Saw: header + 3 nav links\n"
+                            "Data: url=https://x.com, status=200"
+                        ),
+                    }
+                ],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    text = "y" * 5000
+    out = await compress_tool_result(text, llm=llm, target_chars=200)
+    assert "Did: navigated" in out
+    assert "[compressed by LLM]" in out
+    assert len(llm.calls) == 1
+    user_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "tool output start" in user_prompt
+    assert "tool output end" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_falls_back_when_llm_raises() -> None:
+    from openmimi.compression import compress_tool_result
+
+    class _BoomLLM:
+        async def create(self, **_: Any) -> dict[str, Any]:
+            raise RuntimeError("upstream is down")
+
+    text = "z" * 3000
+    out = await compress_tool_result(text, llm=_BoomLLM(), target_chars=120)
+    assert out.startswith("z" * 120)
+    assert "[truncated" in out
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_falls_back_when_reply_empty() -> None:
+    from openmimi.compression import compress_tool_result
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": ""}],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    text = "w" * 2000
+    out = await compress_tool_result(text, llm=llm, target_chars=150)
+    assert out.startswith("w" * 150)
+    assert "[truncated" in out
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_caps_oversized_summary() -> None:
+    """If the LLM ignores the 3-line cap, we still bound the output."""
+    from openmimi.compression import compress_tool_result
+
+    long_summary = "Did: ok\n" + ("payload " * 500)
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": long_summary}],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    out = await compress_tool_result(
+        "input " * 1000, llm=llm, target_chars=200
+    )
+    # 2x target_chars cap (400) + suffix
+    body = out.replace("\n... [compressed by LLM]", "")
+    assert len(body) <= 400
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_clips_input_before_sending_to_llm() -> None:
+    """A 100k tool_result must not be shipped verbatim to the compressor."""
+    from openmimi.compression import compress_tool_result
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Did: x\nSaw: y\nData: z"}
+                ],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    text = "Q" * 100_000
+    await compress_tool_result(text, llm=llm, target_chars=300)
+    user_prompt = llm.calls[0]["messages"][0]["content"]
+    # default max_input_chars=8000; +/- prompt scaffolding stays well below 10000
+    assert len(user_prompt) < 10_000
