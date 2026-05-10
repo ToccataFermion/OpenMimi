@@ -632,3 +632,156 @@ async def test_wait_for_network_idle_installs_hook_and_returns_when_idle() -> No
     # First call should install the hook (mentions __openmimi_network_idle_hooked).
     assert "__openmimi_network_idle_hooked" in captured[0]
 
+
+def test_registry_has_tab_session_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "clipboard",
+        "tab_list",
+        "tab_switch",
+        "tab_new",
+        "tab_close",
+        "save_session",
+        "load_session",
+        "clear_cache",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_clipboard_read_returns_text() -> None:
+    """clipboard read forwards to the daemon clipboard subcommand and unwraps text."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"text":"hello"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"text": "hello"}
+
+    result = await actions.get("clipboard")(_Engine(), {"clipboard_action": "read"})
+    assert result.is_error is False
+    assert "Clipboard: hello" in result.output
+    assert captured == [("clipboard", "read", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_clipboard_write_reports_chars_written() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+    result = await actions.get("clipboard")(
+        _Engine(), {"clipboard_action": "write", "clipboard_text": "abc"}
+    )
+    assert result.is_error is False
+    assert "Wrote 3 chars" in result.output
+    assert captured == [("clipboard", "write", "abc", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_tab_list_returns_open_tabs_summary() -> None:
+    from openmimi.tools import actions
+
+    refresh_calls = 0
+
+    class _Engine:
+        _tabs = [{"id": "t1", "url": "https://a/"}, {"id": "t2", "url": "https://b/"}]
+        _active_tab_index = 1
+
+        async def _refresh_tabs(self) -> None:
+            nonlocal refresh_calls
+            refresh_calls += 1
+
+    result = await actions.get("tab_list")(_Engine(), {})
+    assert result.is_error is False
+    assert "Tab 1: https://a/" in result.output
+    assert "Tab 2: https://b/" in result.output
+    assert "Active tab: 1" in result.output
+    assert refresh_calls == 1
+    assert result.details is not None
+    assert result.details["active_tab"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tab_new_opens_tab_via_subcommand() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        _tabs: list[Any] = []
+        _active_tab_index = 1
+
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _refresh_tabs(self) -> None:
+            return None
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("tab_new")(_Engine(), {"url": "https://example.com"})
+    assert result.is_error is False
+    assert "New tab opened: https://example.com" in result.output
+    assert captured == [("tab", "new", "https://example.com", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_save_session_requires_file_path() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("save_session")(_Engine(), {})
+    assert result.is_error is True
+    assert "file_path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_load_session_requires_file_path() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("load_session")(_Engine(), {})
+    assert result.is_error is True
+    assert "file_path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_runs_eval_and_reports_ok() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True}}
+
+    result = await actions.get("clear_cache")(_Engine(), {})
+    assert result.is_error is False
+    assert "Cache cleared" in result.output
+    # First arg must be eval and the JS payload should mention localStorage.clear()
+    assert captured[0][0] == "eval"
+    assert "localStorage.clear()" in captured[0][1]
+
