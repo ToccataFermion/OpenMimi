@@ -4,7 +4,7 @@ Design intent: agent-browser is a sidecar process (Rust CLI) that speaks CDP.
 We communicate via subprocess, parse --json output, and translate into OpenMimi's
 ToolResult format.
 
-Key workflow difference from BrowserTool:
+Key workflow:
 - LLM must first call snapshot to discover @eN refs
 - Subsequent actions use refs for precise, stable targeting
 - Text-based locators (find text "..." click) are available as fallback

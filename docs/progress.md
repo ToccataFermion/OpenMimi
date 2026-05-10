@@ -5,11 +5,11 @@
 
 ## 当前焦点
 
-**Wave 1 #1**:删除 legacy `browser.py`(1108 行死代码)。
+**Wave 1 #2**:修复 / 移除 skills 加载(`src/openmimi/skills.py:11` 指向已删除的 `skills/` 目录,所有 `format_skill_for_prompt` 调用静默失败)。
 
 ## Wave 1 — 清债 + 基础(本周)
 
-- [ ] #1 删除 legacy `browser.py`,从 `tools/__init__.py` 摘掉 `BrowserTool` 导出
+- [x] #1 删除 legacy `browser.py`,从 `tools/__init__.py` 摘掉 `BrowserTool` 导出
 - [ ] #2 修复 / 移除 skills 加载(`skills.py` 指向已删除目录)
 - [ ] #3 错误码扩容 + 结构化恢复提示(~20 个,带 `next_step_hint` 字段)
 - [ ] #6 Daemon prewarm(REPL 启动时即触发 `_ensure_daemon`)
@@ -47,11 +47,11 @@
 
 ## 已完成
 
-(暂无)
+- 2026-05-11 · **Wave 1 #1** — 删除 `browser.py` (1108 行)、`browser_schema.py` (344 行)、相关测试与脚本;`tools/__init__.py` 收敛导出。`pytest`: 62 passed / 2 pre-existing failures(与本改动无关,见 Blockers)。
 
 ## Blockers
 
-(暂无)
+- `tests/unit/test_cli.py::test_run_no_screenshots_sets_env` 和 `tests/unit/test_env_flags.py::test_screenshots_disabled_default`:测试断言的 env 变量名(`OPENMIMI_DISABLE_SCREENSHOTS`)与实现读取的(`OPENMIMI_ENABLE_SCREENSHOTS`)语义反转。**预存在的失败**,与 #1 无关,可在 Wave 1 顺手修。
 
 ## 延期项(未来可能要做)
 

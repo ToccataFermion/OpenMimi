@@ -1,10 +1,10 @@
 """Top-level orchestrator: load config, init resources, run sampling loop.
 
-Wires `AnthropicClient`, `BrowserTool`, `JsonlAuditLogger`, and the sampling
-loop into a single entry point that the CLI can call. Tests inject the
-parts directly via the constructor; production code uses `Orchestrator.from_env`
-which reads config + env var for the API key and instantiates real
-implementations.
+Wires `AnthropicClient`, `AgentBrowserTool`, `JsonlAuditLogger`, and the
+sampling loop into a single entry point that the CLI can call. Tests inject
+the parts directly via the constructor; production code uses
+`Orchestrator.from_env` which reads config + env var for the API key and
+instantiates real implementations.
 """
 from __future__ import annotations
 
@@ -257,7 +257,7 @@ class Orchestrator:
     ) -> str:
         """Append one user message and run the tool loop until the assistant stops.
 
-        Unlike `run_task`, this does **not** close tools — the same BrowserTool
+        Unlike `run_task`, this does **not** close tools — the same browser
         session and message history stay alive across turns so follow-up
         instructions see the prior page state and conversation context.
 
