@@ -246,3 +246,96 @@ async def test_right_click_uses_box_then_mouse_sequence() -> None:
     assert ("mouse", "move", "30", "30", "--json") in captured
     assert ("mouse", "down", "right", "--json") in captured
     assert ("mouse", "up", "right", "--json") in captured
+
+
+def test_registry_has_scroll_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in ("scroll", "human_scroll", "scroll_until", "scroll_into_view"):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_scroll_handler_calls_subcommand() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("scroll")(
+        _Engine(), {"direction": "down", "amount": 250}
+    )
+    assert result.is_error is False
+    assert "Scrolled down 250px" in result.output
+    assert captured == [("scroll", "down", "250", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_scroll_until_returns_immediately_when_box_present() -> None:
+    """If get box returns a box on the very first probe, scroll_until exits without scrolling."""
+    from openmimi.tools import actions
+
+    exec_calls: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            exec_calls.append(args)
+            return SimpleNamespace(stdout='{"box":{"x":1,"y":2,"width":3,"height":4}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"box": {"x": 1, "y": 2, "width": 3, "height": 4}}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("scroll_until")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "Found after scrolling 0 steps: @e1" in result.output
+    # Only the get box probe should have run; no scroll subcommand.
+    assert exec_calls == [("get", "box", "@e1", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_scroll_until_requires_target() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("scroll_until")(_Engine(), {})
+    assert result.is_error is True
+    assert "scroll_until requires" in result.output
+
+
+@pytest.mark.asyncio
+async def test_scroll_into_view_uses_eval() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true,"tag":"DIV","text":"hello"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "tag": "DIV", "text": "hello"}}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("scroll_into_view")(_Engine(), {"ref": "@e2"})
+    assert result.is_error is False
+    assert "Scrolled into view" in result.output
+    # First positional arg must be ``eval`` and the JS payload must mention scrollIntoView.
+    assert captured[0][0] == "eval"
+    assert "scrollIntoView" in captured[0][1]

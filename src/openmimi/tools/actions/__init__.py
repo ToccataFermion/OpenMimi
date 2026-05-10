@@ -78,3 +78,4 @@ __all__ = [
 # already available when each module's @register calls fire.
 from . import navigation  # noqa: E402,F401  (side-effect: registration)
 from . import interaction  # noqa: E402,F401  (side-effect: registration)
+from . import scroll  # noqa: E402,F401  (side-effect: registration)
