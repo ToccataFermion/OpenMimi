@@ -655,3 +655,92 @@ def test_from_env_truncate_strategy_leaves_compress_llm_none(
 
     orch = Orchestrator.from_env(config=cfg)
     assert orch._compress_llm is None
+
+
+# --- Episodic memory wiring (#9 stage 2) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_task_passes_episodic_to_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_task` must thread `self._episodic` through to sampling_loop."""
+    captured = _capture_sampling_loop(monkeypatch)
+    sentinel_episodic = object()
+    orch, _ = _make_orch(tmp_path, llm=object())
+    orch._episodic = sentinel_episodic
+
+    await orch.run_task("hi")
+
+    assert captured["episodic"] is sentinel_episodic
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_passes_episodic_to_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_chat_turn` must thread the same episodic store as `run_task`."""
+    captured = _capture_sampling_loop(monkeypatch)
+    sentinel_episodic = object()
+    orch, _ = _make_orch(tmp_path, llm=object())
+    orch._episodic = sentinel_episodic
+
+    messages: list[dict[str, Any]] = []
+    await orch.run_chat_turn(
+        messages=messages, session_id="s-x", user_content="anything"
+    )
+
+    assert captured["episodic"] is sentinel_episodic
+
+
+@pytest.mark.asyncio
+async def test_run_task_default_episodic_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without injection `_make_orch` leaves _episodic at None — passes through."""
+    captured = _capture_sampling_loop(monkeypatch)
+    orch, _ = _make_orch(tmp_path, llm=object())
+    # _episodic untouched here.
+    await orch.run_task("hi")
+    assert captured["episodic"] is None
+
+
+def test_from_env_instantiates_episodic_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`from_env` should construct an EpisodicStore by default."""
+    from openmimi.memory.episodic import EpisodicStore
+
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient",
+        lambda **kw: object(),
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool",
+        lambda **kw: object(),
+    )
+    # Redirect the EpisodicStore default base_dir into tmp_path so the
+    # test does not touch the repo's data/ folder.
+    captured: dict[str, Any] = {}
+
+    class _FakeEpisodicStore(EpisodicStore):
+        def __init__(self) -> None:
+            super().__init__(base_dir=tmp_path / "episodic")
+            captured["instance"] = self
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.EpisodicStore", _FakeEpisodicStore
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert orch._episodic is captured["instance"]
+    # The default base_dir is overridden to tmp; just assert it's a real store.
+    assert isinstance(orch._episodic, EpisodicStore)

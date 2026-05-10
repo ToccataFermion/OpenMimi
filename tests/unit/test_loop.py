@@ -1116,3 +1116,306 @@ async def test_compress_old_truncate_idempotent_on_already_truncated() -> None:
     )
     # No re-truncation: the suffix appears exactly once.
     assert _extract_old_text(messages).count(_TRUNCATED_TEXT_SUFFIX) == 1
+
+
+# --- Episodic memory wiring (#9 stage 2) ------------------------------------
+
+
+class _RecordingEpisodic:
+    """Captures every ``append_step`` call for assertion."""
+
+    def __init__(self, *, behaviour: Any = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._behaviour = behaviour
+
+    def append_step(
+        self,
+        *,
+        session_id: str,
+        step: int,
+        record: dict[str, Any],
+    ) -> Any:
+        self.calls.append(
+            {"session_id": session_id, "step": step, "record": dict(record)}
+        )
+        if isinstance(self._behaviour, Exception):
+            raise self._behaviour
+        if callable(self._behaviour):
+            self._behaviour()
+        return None
+
+
+@pytest.mark.asyncio
+async def test_episodic_records_successful_tool_call() -> None:
+    """Each successful tool call writes one parallel step record."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="sess-A",
+        episodic=episodic,
+    )
+
+    assert len(episodic.calls) == 1
+    call = episodic.calls[0]
+    assert call["session_id"] == "sess-A"
+    assert call["step"] == 1
+    rec = call["record"]
+    assert rec["tool"] == "browser"
+    assert rec["action"] == "screenshot"  # extracted from tool_input
+    assert rec["result_summary"] == "ok"
+    assert rec["is_error"] is False
+    assert rec["error_code"] is None
+    assert rec["url"] is None
+    assert rec["domain"] is None
+
+
+@pytest.mark.asyncio
+async def test_episodic_extracts_url_and_domain_from_details() -> None:
+    """When ToolResult.details carries url, episodic record gets url+domain."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "navigate"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("end")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(
+        ToolResult(
+            output="navigated",
+            details={"url": "https://example.com/foo"},
+        )
+    )
+    coll = _make_collection(tool)
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    rec = episodic.calls[0]["record"]
+    assert rec["url"] == "https://example.com/foo"
+    assert rec["domain"] == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_episodic_records_tool_error_result() -> None:
+    """A ToolResult with is_error=True propagates is_error/error_code."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "click"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("end")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(
+        ToolResult(
+            output="not found",
+            is_error=True,
+            details={"error_code": ErrorCode.TARGET_NOT_FOUND.value},
+        )
+    )
+    coll = _make_collection(tool)
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    rec = episodic.calls[0]["record"]
+    assert rec["is_error"] is True
+    assert rec["error_code"] == "TARGET_NOT_FOUND"
+    assert rec["action"] == "click"
+
+
+@pytest.mark.asyncio
+async def test_episodic_records_tool_exception() -> None:
+    """A raised exception during tool dispatch still emits one record."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("recovered")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(RuntimeError("boom"))
+    coll = _make_collection(tool)
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    assert len(episodic.calls) == 1
+    rec = episodic.calls[0]["record"]
+    assert rec["is_error"] is True
+    assert rec["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+    assert "RuntimeError" in rec["result_summary"]
+
+
+@pytest.mark.asyncio
+async def test_episodic_records_protocol_error_for_empty_tool_name() -> None:
+    """A tool_use missing `name` produces an episodic record under '<unknown>'."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "", {"action": "noop"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    coll = _make_collection(_FakeTool(ToolResult(output="ok")))
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    assert len(episodic.calls) == 1
+    rec = episodic.calls[0]["record"]
+    assert rec["tool"] == "<unknown>"
+    assert rec["is_error"] is True
+    assert rec["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_episodic_records_tool_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tool that exceeds OPENMIMI_TOOL_TIMEOUT_S still emits one record."""
+    monkeypatch.setenv("OPENMIMI_TOOL_TIMEOUT_S", "0.05")
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "wait"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("retry done")], stop_reason="end_turn"),
+        ]
+    )
+
+    async def _slow(_inp: dict[str, Any]) -> ToolResult:
+        await asyncio.sleep(5.0)
+        return ToolResult(output="never")
+
+    class _SlowTool(ToolBase):
+        name = "browser"
+
+        def to_params(self) -> dict[str, Any]:
+            return {"name": self.name, "description": "slow", "input_schema": {}}
+
+        async def __call__(self, tool_input: dict[str, Any]) -> ToolResult:
+            return await _slow(tool_input)
+
+    coll = _make_collection(_SlowTool())
+    episodic = _RecordingEpisodic()
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    assert len(episodic.calls) == 1
+    rec = episodic.calls[0]["record"]
+    assert rec["is_error"] is True
+    assert rec["error_code"] == ErrorCode.TOOL_INTERNAL_ERROR.value
+    assert "timed out" in rec["result_summary"].lower()
+
+
+@pytest.mark.asyncio
+async def test_episodic_failure_does_not_break_loop() -> None:
+    """An exception inside append_step is swallowed; the loop keeps running."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    episodic = _RecordingEpisodic(behaviour=OSError("disk full"))
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        episodic=episodic,
+    )
+
+    # Loop completed: 1 user + 2 assistant + 1 user(tool_results) = 4 messages.
+    assert len(out) == 4
+    # The append still happened (we recorded it before raising).
+    assert len(episodic.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_episodic_means_no_calls() -> None:
+    """The loop must not error when episodic is None (default)."""
+    llm = _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("tu1", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    # episodic kwarg omitted entirely.
+    out = await sampling_loop(
+        messages=messages, tools=coll, llm=llm, session_id="s"
+    )
+    assert len(out) == 4

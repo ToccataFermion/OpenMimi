@@ -19,6 +19,7 @@ from .config.schema import AppConfig
 from .llm import AnthropicClient, OpenAIChatClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
+from .memory.episodic import EpisodicStore
 from .memory.site_store import SiteMemoryStore, extract_domain
 from .planning import LLMPlanner, LLMVerifier, NullVerifier, Plan, Verifier
 from .tools import (
@@ -100,6 +101,7 @@ class Orchestrator:
         planner: LLMPlanner | None = None,
         verifier: Verifier | None = None,
         compress_llm: LLMClient | None = None,
+        episodic: EpisodicStore | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
@@ -110,6 +112,7 @@ class Orchestrator:
         self.planner = planner
         self.verifier = verifier
         self._compress_llm = compress_llm
+        self._episodic = episodic
 
     @classmethod
     def from_env(
@@ -232,6 +235,8 @@ class Orchestrator:
             llm if cfg.compression_strategy == "summarize" else None
         )
 
+        episodic = EpisodicStore()
+
         return cls(
             config=cfg,
             llm=llm,
@@ -242,6 +247,7 @@ class Orchestrator:
             planner=planner,
             verifier=verifier,
             compress_llm=compress_llm,
+            episodic=episodic,
         )
 
     def prewarm_browser(self) -> bool:
@@ -281,6 +287,7 @@ class Orchestrator:
                 llm=self.llm,
                 session_id=session_id,
                 audit=self.audit,
+                episodic=self._episodic,
                 max_turns=self.config.max_turns,
                 only_n_most_recent_images=self.config.only_n_most_recent_images,
                 max_context_turns=self.config.max_context_turns,
@@ -366,6 +373,7 @@ class Orchestrator:
             llm=self.llm,
             session_id=session_id,
             audit=self.audit,
+            episodic=self._episodic,
             max_turns=self.config.max_turns,
             only_n_most_recent_images=self.config.only_n_most_recent_images,
             max_context_turns=self.config.max_context_turns,

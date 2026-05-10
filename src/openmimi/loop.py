@@ -26,6 +26,7 @@ from typing import Any, Literal, Protocol
 
 from .compression import compress_tool_result, estimate_tokens
 from .llm.base import LLMClient
+from .memory.site_store import extract_domain
 from .planning import Plan, Verifier
 from .tools.collection import ToolCollection
 from .tools.errors import ErrorCode
@@ -58,6 +59,25 @@ class AuditSink(Protocol):
         image_path: str | None,
         duration_ms: int,
     ) -> None: ...
+
+
+class EpisodicSink(Protocol):
+    """Minimal episodic-memory surface consumed by the sampling loop.
+
+    ``EpisodicStore`` satisfies this Protocol; tests can plug in any
+    object exposing ``append_step`` with the same shape. Each tool
+    invocation (success, protocol-error, timeout, exception) emits one
+    step record in parallel with the audit write so future runs can
+    grep over the JSONL trail.
+    """
+
+    def append_step(
+        self,
+        *,
+        session_id: str,
+        step: int,
+        record: dict[str, Any],
+    ) -> Any: ...
 
 
 _DEFAULT_SYSTEM_PROMPT = """
@@ -128,6 +148,7 @@ async def sampling_loop(
     llm: LLMClient,
     session_id: str,
     audit: AuditSink | None = None,
+    episodic: EpisodicSink | None = None,
     system: str = _DEFAULT_SYSTEM_PROMPT,
     max_turns: int = 30,
     only_n_most_recent_images: int = 2,
@@ -228,6 +249,20 @@ async def sampling_loop(
                         image_path=None,
                         duration_ms=0,
                     )
+                _safe_append_step(
+                    episodic,
+                    session_id=session_id,
+                    step=step,
+                    record=_episodic_record(
+                        tool=tool_name or "<unknown>",
+                        tool_input=tool_input,
+                        result_summary=protocol_err[
+                            :_RESULT_SUMMARY_MAX_CHARS
+                        ],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                    ),
+                )
                 continue
 
             _tool_progress(
@@ -269,6 +304,18 @@ async def sampling_loop(
                         image_path=None,
                         duration_ms=duration_ms,
                     )
+                _safe_append_step(
+                    episodic,
+                    session_id=session_id,
+                    step=step,
+                    record=_episodic_record(
+                        tool=tool_name,
+                        tool_input=tool_input,
+                        result_summary=err_text[:_RESULT_SUMMARY_MAX_CHARS],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                    ),
+                )
                 _tool_progress(
                     f"[tool] step {step}: {tool_name} TIMEOUT after {tout}s"
                 )
@@ -302,6 +349,18 @@ async def sampling_loop(
                         image_path=None,
                         duration_ms=duration_ms,
                     )
+                _safe_append_step(
+                    episodic,
+                    session_id=session_id,
+                    step=step,
+                    record=_episodic_record(
+                        tool=tool_name,
+                        tool_input=tool_input,
+                        result_summary=err_text[:_RESULT_SUMMARY_MAX_CHARS],
+                        is_error=True,
+                        error_code=ErrorCode.TOOL_INTERNAL_ERROR.value,
+                    ),
+                )
                 _tool_progress(
                     f"[tool] step {step}: {tool_name} error: {exc!s}"
                 )
@@ -340,6 +399,23 @@ async def sampling_loop(
                     image_path=image_path,
                     duration_ms=duration_ms,
                 )
+            url, domain = _result_url_and_domain(result)
+            _safe_append_step(
+                episodic,
+                session_id=session_id,
+                step=step,
+                record=_episodic_record(
+                    tool=tool_name,
+                    tool_input=tool_input,
+                    result_summary=(result.output or "")[
+                        :_RESULT_SUMMARY_MAX_CHARS
+                    ],
+                    is_error=result.is_error,
+                    error_code=_extract_error_code(result),
+                    url=url,
+                    domain=domain,
+                ),
+            )
 
         messages.append({"role": "user", "content": tool_result_blocks})
         _trim_old_images(messages, only_n_most_recent_images)
@@ -443,6 +519,79 @@ def _extract_error_code(result: ToolResult) -> str | None:
         return None
     code = result.details.get("error_code")
     return str(code) if code else None
+
+
+def _episodic_record(
+    *,
+    tool: str,
+    tool_input: dict[str, Any],
+    result_summary: str,
+    is_error: bool,
+    error_code: str | None,
+    url: str | None = None,
+    domain: str | None = None,
+) -> dict[str, Any]:
+    """Build the dict that goes into the JSONL step record.
+
+    ``action`` is harvested from ``tool_input["action"]`` for browser-style
+    tools that route via subcommand; for other tools (computer / shell /
+    file / code) it stays ``None``. ``url`` / ``domain`` are surfaced
+    when ``ToolResult.details`` contains them — currently only
+    ``browser_navigate`` and ``extract get_url`` populate this — so the
+    stage-3 ``memory_grep`` tool can filter the trail by site.
+    """
+    action: str | None = None
+    if isinstance(tool_input, dict):
+        a = tool_input.get("action")
+        if isinstance(a, str):
+            action = a
+    return {
+        "tool": tool,
+        "action": action,
+        "result_summary": result_summary,
+        "is_error": is_error,
+        "error_code": error_code,
+        "url": url,
+        "domain": domain,
+    }
+
+
+def _result_url_and_domain(
+    result: ToolResult,
+) -> tuple[str | None, str | None]:
+    """Pull URL + derived domain off a ``ToolResult.details`` dict if present."""
+    if not result.details:
+        return None, None
+    url = result.details.get("url")
+    if not isinstance(url, str) or not url:
+        return None, None
+    return url, extract_domain(url)
+
+
+def _safe_append_step(
+    episodic: EpisodicSink | None,
+    *,
+    session_id: str,
+    step: int,
+    record: dict[str, Any],
+) -> None:
+    """Best-effort episodic append; swallow all errors.
+
+    Episodic memory is supplementary — a disk full / permission error
+    must never break an in-flight tool call or surface to the LLM.
+    """
+    if episodic is None:
+        return
+    try:
+        episodic.append_step(
+            session_id=session_id, step=step, record=record
+        )
+    except Exception as exc:
+        _log.warning(
+            "episodic append_step failed: %s: %s",
+            exc.__class__.__name__,
+            exc,
+        )
 
 
 def _persist_screenshot_if_any(
@@ -676,4 +825,4 @@ def _dump_prompt(
         pass
 
 
-__all__ = ["AuditSink", "sampling_loop"]
+__all__ = ["AuditSink", "EpisodicSink", "sampling_loop"]
