@@ -1059,3 +1059,285 @@ async def test_console_installs_hook_then_reads_logs() -> None:
     assert "__openmimi_console_logs" in payloads[0]
     assert '"level": "error"' in result.output
 
+
+def test_registry_has_misc_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "select",
+        "upload",
+        "download",
+        "eval",
+        "batch",
+        "drag",
+        "mouse",
+        "focus",
+        "set_viewport",
+        "emulate_device",
+        "set_timezone",
+        "set_locale",
+        "set_geolocation",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_select_requires_options() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("select")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is True
+    assert "options" in result.output
+
+
+@pytest.mark.asyncio
+async def test_upload_requires_file_path() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("upload")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is True
+    assert "file_path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_download_requires_selector() -> None:
+    """download with file_path but no ref/target_text must error."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("download")(
+        _Engine(), {"file_path": "/tmp/out.bin"}
+    )
+    assert result.is_error is True
+    assert "ref" in result.output or "target_text" in result.output
+
+
+@pytest.mark.asyncio
+async def test_eval_rejects_empty_js() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("eval")(_Engine(), {"js": "   "})
+    assert result.is_error is True
+    assert "js" in result.output
+
+
+@pytest.mark.asyncio
+async def test_eval_returns_serialised_result_value() -> None:
+    """eval must surface data.result as a JSON string when present."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *_args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout='{"success":true,"data":{"result":{"answer":42}}}')
+
+        def _parse_json(self, _raw: str) -> dict[str, Any]:
+            return {"success": True, "data": {"result": {"answer": 42}}}
+
+    result = await actions.get("eval")(_Engine(), {"js": "(() => ({answer: 42}))()"})
+    assert result.is_error is False
+    assert "42" in result.output
+    assert "answer" in result.output
+
+
+@pytest.mark.asyncio
+async def test_batch_requires_steps() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("batch")(_Engine(), {})
+    assert "steps" in result.output
+
+
+@pytest.mark.asyncio
+async def test_drag_requires_paired_targets() -> None:
+    """drag without ref+to_ref or target_text+to_target_text must error."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("drag")(_Engine(), {"ref": "@e1"})
+    assert "ref" in result.output and "to_ref" in result.output
+
+
+@pytest.mark.asyncio
+async def test_mouse_move_dispatches_to_subcommand() -> None:
+    """mouse move must forward x/y as positional args to engine._exec mouse move."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="{}")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("mouse")(
+        _Engine(), {"mouse_action": "move", "x": 100, "y": 200}
+    )
+    assert result.is_error is False
+    assert captured[0][:4] == ("mouse", "move", "100", "200")
+
+
+@pytest.mark.asyncio
+async def test_set_viewport_requires_dimensions() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("set_viewport")(_Engine(), {"width": 800})
+    assert result.is_error is True
+    assert "width" in result.output and "height" in result.output
+
+
+@pytest.mark.asyncio
+async def test_set_viewport_runs_resizeTo_eval() -> None:
+    """set_viewport must build a JS payload that calls window.resizeTo."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"width":800,"height":600}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"width": 800, "height": 600}}
+
+    result = await actions.get("set_viewport")(
+        _Engine(), {"width": 800, "height": 600}
+    )
+    assert result.is_error is False
+    assert "Viewport set" in result.output
+    assert "window.resizeTo(800, 600)" in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_emulate_device_runs_setDeviceMetricsOverride() -> None:
+    """emulate_device CDP path must reference Emulation.setDeviceMetricsOverride."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"method":"cdp","device":"iPhone 14"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "method": "cdp", "device": "iPhone 14"}}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("emulate_device")(_Engine(), {"device_name": "iPhone 14"})
+    assert result.is_error is False
+    assert "iPhone 14" in result.output
+    assert "Emulation.setDeviceMetricsOverride" in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_set_timezone_passes_timezoneid() -> None:
+    """set_timezone must pass timezoneId via Emulation.setTimezoneOverride."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"timezone":"Asia/Shanghai"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "timezone": "Asia/Shanghai"}}
+
+    result = await actions.get("set_timezone")(_Engine(), {"timezone": "Asia/Shanghai"})
+    assert result.is_error is False
+    assert "Asia/Shanghai" in result.output
+    assert "Emulation.setTimezoneOverride" in payloads[0]
+    assert "Asia/Shanghai" in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_set_locale_passes_locale_string() -> None:
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"locale":"zh-CN"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "locale": "zh-CN"}}
+
+    result = await actions.get("set_locale")(_Engine(), {"locale": "zh-CN"})
+    assert result.is_error is False
+    assert "zh-CN" in result.output
+    assert "Emulation.setLocaleOverride" in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_set_geolocation_clear_when_no_coords() -> None:
+    """set_geolocation without lat/lon must call Emulation.clearGeolocationOverride."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"cleared":true}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "cleared": True}}
+
+    result = await actions.get("set_geolocation")(_Engine(), {})
+    assert result.is_error is False
+    assert "cleared" in result.output.lower()
+    assert "Emulation.clearGeolocationOverride" in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_set_geolocation_with_coords_sets_override() -> None:
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"lat":31.23,"lon":121.47}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "lat": 31.23, "lon": 121.47}}
+
+    result = await actions.get("set_geolocation")(
+        _Engine(), {"latitude": 31.23, "longitude": 121.47, "accuracy": 50}
+    )
+    assert result.is_error is False
+    assert "31.23" in result.output and "121.47" in result.output
+    assert "Emulation.setGeolocationOverride" in payloads[0]
+    assert "31.23" in payloads[0] and "121.47" in payloads[0]
+
+
