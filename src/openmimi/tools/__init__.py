@@ -12,7 +12,7 @@ from .computer import ComputerTool
 from .file_tool import FileTool
 from .shell import ShellTool
 from .collection import ToolCollection
-from .errors import ErrorCode
+from .errors import ErrorCode, make_error_result, next_step_hint
 from .result import ToolResult
 
 __all__ = [
@@ -29,4 +29,6 @@ __all__ = [
     "ToolBase",
     "ToolCollection",
     "ToolResult",
+    "make_error_result",
+    "next_step_hint",
 ]

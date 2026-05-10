@@ -5,13 +5,13 @@
 
 ## 当前焦点
 
-**Wave 1 #3**:错误码扩容到 ~20 个 + 给每个 ErrorCode 加 `next_step_hint` 的结构化恢复提示,让 LLM 拿到分类信号而不是统一的 `TOOL_INTERNAL_ERROR`。
+**Wave 1 #6**:Daemon prewarm — REPL 启动时即触发 `_ensure_daemon`,把 5 分钟冷启动从首条用户任务里挪出去。
 
 ## Wave 1 — 清债 + 基础(本周)
 
 - [x] #1 删除 legacy `browser.py`,从 `tools/__init__.py` 摘掉 `BrowserTool` 导出
 - [x] #2 修复 / 移除 skills 加载(`skills.py` 指向已删除目录)
-- [ ] #3 错误码扩容 + 结构化恢复提示(~20 个,带 `next_step_hint` 字段)
+- [x] #3 错误码扩容 + 结构化恢复提示(20 个 + `next_step_hint` + `make_error_result` helper)
 - [ ] #6 Daemon prewarm(REPL 启动时即触发 `_ensure_daemon`)
 
 ## Wave 2 — 工程解耦(下周)
@@ -49,6 +49,7 @@
 
 - 2026-05-11 · **Wave 1 #1** — 删除 `browser.py` (1108 行)、`browser_schema.py` (344 行)、相关测试与脚本;`tools/__init__.py` 收敛导出。`pytest`: 62 passed / 2 pre-existing failures(与本改动无关,见 Blockers)。
 - 2026-05-11 · **Wave 1 #2** — 删除 `src/openmimi/skills.py`(指向已删除目录的死代码);**顺手修复**:`Orchestrator._build_system_prompt` 之前完全没注入 site memory(写但不读),现在通过 `memory.format_for_prompt(domain)` 真正接到 system prompt 上。`pytest`: 仍 62 passed / 2 同样的 pre-existing failures。
+- 2026-05-11 · **Wave 1 #3** — `tools/errors.py` 从 5 个 ErrorCode 扩到 20 个,覆盖 element / network / auth / page-state / execution / system 六类;每个 code 配一条 `next_step_hint` 结构化恢复提示;新增 `make_error_result(code, message, ...)` helper,把提示同时写进 `output`(LLM 可见)和 `details`(审计);新增 `tests/unit/test_errors.py`(7 例,覆盖 hint 完整性 / StrEnum 兼容 / extra_details 合并)。`pytest`: 69 passed / 2 同样的 pre-existing failures。**注**:Wave 1 #4 之前不大改 `agent_browser.py`,所以暂未把现有错误路径迁到新 helper(留待 dispatcher 化时一起做)。
 
 ## Blockers
 
