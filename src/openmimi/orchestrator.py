@@ -20,7 +20,6 @@ from .llm import AnthropicClient, OpenAIChatClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
-from .skills import format_skill_for_prompt
 from .tools import (
     AgentBrowserTool,
     BrowserAdvancedTool,
@@ -38,15 +37,21 @@ from .utils.ids import new_session_id
 _DEFAULT_LLM_TIMEOUT_S = 90.0
 
 
-def _build_system_prompt(domain: str | None) -> str:
-    """Assemble system prompt from defaults + site memory + skill files."""
+def _build_system_prompt(
+    domain: str | None, memory: SiteMemoryStore | None = None
+) -> str:
+    """Assemble system prompt from defaults + per-site memory.
+
+    Site memory (if present for *domain*) is appended verbatim so the agent
+    starts each session with whatever lessons the previous one summarized.
+    """
     system = _DEFAULT_SYSTEM_PROMPT
     extras: list[str] = []
 
-    if domain:
-        skill_text = format_skill_for_prompt(domain)
-        if skill_text:
-            extras.append(skill_text)
+    if domain and memory is not None:
+        site_text = memory.format_for_prompt(domain)
+        if site_text:
+            extras.append(site_text)
 
     if extras:
         system = f"{system}\n\n" + "\n\n".join(extras)
@@ -187,7 +192,7 @@ class Orchestrator:
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         domain = extract_domain(task)
 
-        system = _build_system_prompt(domain)
+        system = _build_system_prompt(domain, self.memory)
 
         try:
             await sampling_loop(
@@ -266,7 +271,7 @@ class Orchestrator:
         messages.append({"role": "user", "content": user_content})
 
         domain = extract_domain(user_content)
-        system = _build_system_prompt(domain)
+        system = _build_system_prompt(domain, self.memory)
 
         await sampling_loop(
             messages=messages,
