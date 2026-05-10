@@ -1,8 +1,9 @@
 """Tests for the Plan / Verifier scaffolding (roadmap #7 stages 1-3).
 
 Stage 1 shipped data structures + Protocol; stage 2 wired NullVerifier
-into the loop; stage 3 added LLMVerifier (asks an LLM to grade
-progress against `success_criteria`).
+into the loop; stage 3a added LLMVerifier (asks an LLM to grade
+progress against `success_criteria`); stage 3b adds LLMPlanner
+(asks an LLM to decompose a task into PlanSteps).
 """
 from __future__ import annotations
 
@@ -12,12 +13,15 @@ from typing import Any
 import pytest
 
 from openmimi.planning import (
+    LLMPlanner,
     LLMVerifier,
     NullVerifier,
     Plan,
     PlanStep,
     Verifier,
     _parse_outcome,
+    _parse_plan_steps,
+    _single_step_plan,
     _summarize_messages,
 )
 
@@ -315,3 +319,214 @@ def test_llm_verifier_satisfies_protocol() -> None:
     """LLMVerifier must conform to the Verifier Protocol at runtime."""
     llm = _ScriptedLLM([])
     assert isinstance(LLMVerifier(llm), Verifier)
+
+
+# --- LLMPlanner (stage 3b) --------------------------------------------------
+
+
+def _plan_array_response(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    import json as _json
+    return {"content": [{"type": "text", "text": _json.dumps(steps)}]}
+
+
+def test_parse_plan_steps_extracts_minimal_array() -> None:
+    raw = '[{"step": "open page", "success_criteria": "page loaded"}]'
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert len(steps) == 1
+    assert steps[0].step == "open page"
+    assert steps[0].success_criteria == "page loaded"
+    assert steps[0].allowed_tools is None
+    assert steps[0].budget is None
+
+
+def test_parse_plan_steps_honors_optional_fields() -> None:
+    raw = (
+        '[{"step": "search", "success_criteria": ">=1 result", '
+        '"allowed_tools": ["agent_browser"], "budget": 5}]'
+    )
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert steps[0].allowed_tools == ["agent_browser"]
+    assert steps[0].budget == 5
+
+
+def test_parse_plan_steps_strips_whitespace() -> None:
+    raw = '[{"step": "  click  ", "success_criteria": "  done  "}]'
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert steps[0].step == "click"
+    assert steps[0].success_criteria == "done"
+
+
+def test_parse_plan_steps_extracts_from_noisy_text() -> None:
+    raw = (
+        'Sure, here is the plan:\n'
+        '[{"step": "a", "success_criteria": "ok"},'
+        ' {"step": "b", "success_criteria": "ok"}]\n'
+        'Hope that helps!'
+    )
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert [s.step for s in steps] == ["a", "b"]
+
+
+def test_parse_plan_steps_skips_malformed_entries() -> None:
+    raw = (
+        '[{"step": "good", "success_criteria": "ok"},'
+        ' {"step": "missing criteria"},'
+        ' {"success_criteria": "missing step"},'
+        ' "not a dict",'
+        ' {"step": "", "success_criteria": "empty step"},'
+        ' {"step": "also good", "success_criteria": "ok"}]'
+    )
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert [s.step for s in steps] == ["good", "also good"]
+
+
+def test_parse_plan_steps_drops_non_string_tools() -> None:
+    raw = (
+        '[{"step": "a", "success_criteria": "ok", '
+        '"allowed_tools": ["browser", 42, "", null]}]'
+    )
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert steps[0].allowed_tools == ["browser"]
+
+
+def test_parse_plan_steps_drops_invalid_budget() -> None:
+    raw = (
+        '[{"step": "a", "success_criteria": "ok", "budget": -1},'
+        ' {"step": "b", "success_criteria": "ok", "budget": 0},'
+        ' {"step": "c", "success_criteria": "ok", "budget": "5"},'
+        ' {"step": "d", "success_criteria": "ok", "budget": true}]'
+    )
+    steps = _parse_plan_steps(raw)
+    assert steps is not None
+    assert all(s.budget is None for s in steps)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "no json here",
+        "[]",  # empty array
+        '[{"step": "missing criteria"}]',  # no usable entries
+        '{"step": "a", "success_criteria": "ok"}',  # dict not array
+        "[not valid json",
+        '"just a string"',
+    ],
+)
+def test_parse_plan_steps_returns_none_for_unusable(raw: str) -> None:
+    assert _parse_plan_steps(raw) is None
+
+
+def test_single_step_plan_wraps_task() -> None:
+    plan = _single_step_plan("buy a laptop")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step == "buy a laptop"
+    assert "buy a laptop" in plan.steps[0].success_criteria
+    assert plan.is_complete() is False
+
+
+def test_single_step_plan_handles_empty_task() -> None:
+    plan = _single_step_plan("")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step  # non-empty fallback
+
+
+def test_llm_planner_returns_plan_from_llm_response() -> None:
+    llm = _ScriptedLLM(
+        [
+            _plan_array_response(
+                [
+                    {"step": "open homepage", "success_criteria": "page loaded"},
+                    {
+                        "step": "search 'laptop'",
+                        "success_criteria": ">=1 product visible",
+                        "budget": 3,
+                    },
+                ]
+            )
+        ]
+    )
+    planner = LLMPlanner(llm)
+    plan = asyncio.run(planner.plan_task("buy a laptop"))
+    assert isinstance(plan, Plan)
+    assert [s.step for s in plan.steps] == ["open homepage", "search 'laptop'"]
+    assert plan.steps[1].budget == 3
+
+
+def test_llm_planner_passes_task_and_context_to_llm() -> None:
+    llm = _ScriptedLLM(
+        [_plan_array_response([{"step": "x", "success_criteria": "y"}])]
+    )
+    planner = LLMPlanner(llm)
+    asyncio.run(planner.plan_task("the original task", "site: example.com"))
+    user_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "the original task" in user_prompt
+    assert "site: example.com" in user_prompt
+
+
+def test_llm_planner_omits_context_section_when_empty() -> None:
+    llm = _ScriptedLLM(
+        [_plan_array_response([{"step": "x", "success_criteria": "y"}])]
+    )
+    planner = LLMPlanner(llm)
+    asyncio.run(planner.plan_task("the task"))
+    user_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "Environment context" not in user_prompt
+    assert "the task" in user_prompt
+
+
+def test_llm_planner_falls_back_to_single_step_on_empty_task() -> None:
+    llm = _ScriptedLLM([])  # should not be called
+    planner = LLMPlanner(llm)
+    plan = asyncio.run(planner.plan_task(""))
+    assert len(plan.steps) == 1
+    assert llm.calls == []
+
+
+def test_llm_planner_falls_back_to_single_step_on_malformed_reply() -> None:
+    llm = _ScriptedLLM([_text_response("not json at all { garbage")])
+    planner = LLMPlanner(llm)
+    plan = asyncio.run(planner.plan_task("a complex task"))
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step == "a complex task"
+
+
+def test_llm_planner_falls_back_to_single_step_on_empty_array() -> None:
+    llm = _ScriptedLLM([_text_response("[]")])
+    planner = LLMPlanner(llm)
+    plan = asyncio.run(planner.plan_task("a task"))
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step == "a task"
+
+
+def test_llm_planner_falls_back_to_single_step_on_exception() -> None:
+    class _BoomLLM:
+        async def create(self, **_: Any) -> dict[str, Any]:
+            raise RuntimeError("upstream is down")
+
+    planner = LLMPlanner(_BoomLLM())  # type: ignore[arg-type]
+    plan = asyncio.run(planner.plan_task("a task"))
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step == "a task"
+
+
+def test_llm_planner_drops_steps_that_lack_required_fields() -> None:
+    llm = _ScriptedLLM(
+        [
+            _plan_array_response(
+                [
+                    {"step": "good", "success_criteria": "ok"},
+                    {"step": "missing criteria"},
+                ]
+            )
+        ]
+    )
+    planner = LLMPlanner(llm)
+    plan = asyncio.run(planner.plan_task("a task"))
+    assert [s.step for s in plan.steps] == ["good"]

@@ -2,8 +2,9 @@
 
 Roadmap item #7. Stage 1 shipped the data structures and the Verifier
 Protocol + `NullVerifier` (always "continue") as a safe default.
-Stage 2 wired both into `sampling_loop`. Stage 3 adds an LLM-backed
-verifier (`LLMVerifier`); a Planner will follow.
+Stage 2 wired both into `sampling_loop`. Stage 3a added an LLM-backed
+verifier (`LLMVerifier`). Stage 3b adds an LLM-backed planner
+(`LLMPlanner`) that decomposes a task into PlanSteps.
 
 Glossary:
     PlanStep      — one chunk of the user task, with success criteria.
@@ -12,6 +13,7 @@ Glossary:
                     of "done" / "continue" / "replan".
     NullVerifier  — always returns "continue"; default when planning is off.
     LLMVerifier   — asks an LLM to grade progress against `success_criteria`.
+    LLMPlanner    — asks an LLM to decompose a task into PlanSteps.
 """
 from __future__ import annotations
 
@@ -302,7 +304,147 @@ class LLMVerifier:
         return outcome if outcome is not None else "continue"
 
 
+_LLM_PLANNER_SYSTEM = (
+    "You are a task-decomposition planner for an autonomous browser agent. "
+    "Given a user task and optional environment context, output a short "
+    "ordered plan that an executor can run step by step. "
+    "Each step must be observable (the verifier needs to grade success). "
+    "Output STRICT JSON only — a top-level array of step objects, each with: "
+    '"step" (imperative sentence), '
+    '"success_criteria" (one short sentence the verifier can check), '
+    'optional "allowed_tools" (array of tool names — omit if unrestricted), '
+    'optional "budget" (integer turn cap for this step). '
+    "Prefer 1-5 steps for simple tasks, up to ~8 for complex ones. "
+    "No prose, no markdown, no fences — only the JSON array."
+)
+
+
+def _parse_plan_steps(text: str) -> list[PlanStep] | None:
+    """Extract a list[PlanStep] from a possibly-noisy LLM reply.
+
+    Tries direct JSON first, then a regex sniff for the first [...] blob.
+    Each candidate dict must have non-empty `step` and `success_criteria`
+    strings; malformed entries are dropped. Returns None if no usable
+    steps survive (caller should fall back to a single-step plan).
+    """
+    if not text:
+        return None
+    candidates = [text.strip()]
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, list):
+            continue
+        steps: list[PlanStep] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            step = entry.get("step")
+            criteria = entry.get("success_criteria")
+            if not isinstance(step, str) or not step.strip():
+                continue
+            if not isinstance(criteria, str) or not criteria.strip():
+                continue
+            allowed = entry.get("allowed_tools")
+            allowed_tools: list[str] | None = None
+            if isinstance(allowed, list):
+                allowed_tools = [
+                    str(t) for t in allowed if isinstance(t, str) and t
+                ] or None
+            budget_raw = entry.get("budget")
+            budget: int | None = None
+            if isinstance(budget_raw, bool):
+                pass  # bool is int — ignore on purpose
+            elif isinstance(budget_raw, int) and budget_raw > 0:
+                budget = budget_raw
+            steps.append(
+                PlanStep(
+                    step=step.strip(),
+                    success_criteria=criteria.strip(),
+                    allowed_tools=allowed_tools,
+                    budget=budget,
+                )
+            )
+        if steps:
+            return steps
+    return None
+
+
+def _single_step_plan(task: str) -> Plan:
+    """Fallback Plan used when the Planner LLM fails or returns garbage.
+
+    Wraps the whole task as a single step so the rest of the pipeline
+    still has something to work with — the Verifier will keep returning
+    "continue" until the loop reaches its existing turn cap or the
+    Verifier flips to "done" / "replan".
+    """
+    task = task.strip() or "complete the user's request"
+    return Plan(
+        steps=[
+            PlanStep(
+                step=task,
+                success_criteria=f"task accomplished: {task}",
+            )
+        ]
+    )
+
+
+class LLMPlanner:
+    """Planner that asks an LLM to decompose a task into PlanSteps.
+
+    Mirrors `LLMVerifier`'s safety model: any failure (network, JSON
+    parse, empty array) falls back to a single-step plan that wraps
+    the whole task. `plan_task` therefore **always** returns a usable
+    `Plan` — never None, never raises. Caller picks the underlying
+    model via the `LLMClient` it injects.
+    """
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        *,
+        max_tokens: int = 1024,
+        system_prompt: str | None = None,
+    ) -> None:
+        self.llm = llm
+        self.max_tokens = max_tokens
+        self.system_prompt = system_prompt or _LLM_PLANNER_SYSTEM
+
+    async def plan_task(self, task: str, system_context: str = "") -> Plan:
+        clean_task = (task or "").strip()
+        if not clean_task:
+            return _single_step_plan("complete the user's request")
+        ctx = (system_context or "").strip()
+        user_prompt = (
+            (f"Environment context:\n{ctx}\n\n" if ctx else "")
+            + f"User task:\n{clean_task}\n\n"
+            + 'Reply with ONLY a JSON array like '
+            + '[{"step": "...", "success_criteria": "...", '
+            + '"allowed_tools": ["..."], "budget": 5}, ...]'
+        )
+        try:
+            response = await self.llm.create(
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=[],
+                max_tokens=self.max_tokens,
+            )
+        except Exception:
+            return _single_step_plan(clean_task)
+        text = _extract_response_text(response)
+        steps = _parse_plan_steps(text)
+        if not steps:
+            return _single_step_plan(clean_task)
+        return Plan(steps=steps)
+
+
 __all__ = [
+    "LLMPlanner",
     "LLMVerifier",
     "NullVerifier",
     "Plan",
