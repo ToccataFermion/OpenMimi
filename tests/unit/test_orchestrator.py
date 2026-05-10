@@ -744,3 +744,92 @@ def test_from_env_instantiates_episodic_store(
     assert orch._episodic is captured["instance"]
     # The default base_dir is overridden to tmp; just assert it's a real store.
     assert isinstance(orch._episodic, EpisodicStore)
+
+
+# --- SubAgent wiring (#8 stage 3) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_task_sets_current_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_task` must publish the new session id onto _current_session_id."""
+    _capture_sampling_loop(monkeypatch)
+    orch, _ = _make_orch(tmp_path, llm=object())
+    assert orch._current_session_id == ""
+    result = await orch.run_task("hi")
+    assert orch._current_session_id == result["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_sets_current_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_chat_turn` must publish the passed-in session id on entry."""
+    _capture_sampling_loop(monkeypatch)
+    orch, _ = _make_orch(tmp_path, llm=object())
+    messages: list[dict[str, Any]] = []
+    await orch.run_chat_turn(
+        messages=messages, session_id="my-sid", user_content="x"
+    )
+    assert orch._current_session_id == "my-sid"
+
+
+def test_from_env_registers_sub_agent_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`from_env` must register a `sub_agent` tool in the collection."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", lambda **kw: object()
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool", lambda **kw: object()
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.EpisodicStore",
+        lambda: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert "sub_agent" in orch.tools
+
+
+def test_from_env_wires_sub_agent_session_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The registered sub_agent's session_provider must read orchestrator state."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", lambda **kw: object()
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool", lambda **kw: object()
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.EpisodicStore",
+        lambda: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    orch = Orchestrator.from_env(config=cfg)
+    sub_tool = orch.tools.get("sub_agent")
+    assert sub_tool is not None
+    # The provider should reflect whatever the orchestrator currently advertises.
+    orch._current_session_id = "first-sid"
+    assert sub_tool._session_provider() == "first-sid"  # type: ignore[attr-defined]
+    orch._current_session_id = "second-sid"
+    assert sub_tool._session_provider() == "second-sid"  # type: ignore[attr-defined]

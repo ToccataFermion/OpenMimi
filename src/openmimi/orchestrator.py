@@ -22,6 +22,7 @@ from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.episodic import EpisodicStore
 from .memory.site_store import SiteMemoryStore, extract_domain
 from .planning import LLMPlanner, LLMVerifier, NullVerifier, Plan, Verifier
+from .sub_agent import SubAgentRunner
 from .tools import (
     AgentBrowserTool,
     BrowserAdvancedTool,
@@ -38,6 +39,9 @@ from .tools import (
     ShellTool,
     ToolCollection,
 )
+# Imported from the submodule directly to avoid the cycle that re-exporting
+# through ``openmimi.tools`` would introduce — see note in tools/__init__.py.
+from .tools.sub_agent_tool import SubAgentTool
 from .utils.ids import new_session_id
 
 _DEFAULT_LLM_TIMEOUT_S = 90.0
@@ -117,6 +121,10 @@ class Orchestrator:
         self.verifier = verifier
         self._compress_llm = compress_llm
         self._episodic = episodic
+        # Updated at every ``run_task`` / ``run_chat_turn`` entry so
+        # ``SubAgentTool`` can stamp the current parent session id onto
+        # the sub-session ids it derives.
+        self._current_session_id: str = ""
 
     @classmethod
     def from_env(
@@ -248,7 +256,18 @@ class Orchestrator:
 
         episodic = EpisodicStore()
 
-        return cls(
+        # Wave 5 #8 stage 3 — register the sub_agent tool last, so the
+        # SubAgentRunner sees the full parent toolset (excluding itself
+        # by construction: registering before instantiating the runner
+        # would cause infinite recursion in principle, even though the
+        # sub-agent system prompt forbids it).
+        sub_agent_runner = SubAgentRunner(
+            llm=llm, parent_tools=tools, episodic=episodic
+        )
+        sub_agent_tool = SubAgentTool(sub_agent_runner)
+        tools.register(sub_agent_tool)
+
+        orch = cls(
             config=cfg,
             llm=llm,
             tools=tools,
@@ -260,6 +279,13 @@ class Orchestrator:
             compress_llm=compress_llm,
             episodic=episodic,
         )
+        # Now that the orchestrator instance exists, wire the SubAgentTool
+        # to read its current session id on every call. Until this line
+        # runs the tool returns "" as the parent id, which is fine — the
+        # SubAgentRunner falls back to ``sub-<N>`` when there is no
+        # parent id.
+        sub_agent_tool.set_session_provider(lambda: orch._current_session_id)
+        return orch
 
     def prewarm_browser(self) -> bool:
         """Surface the daemon prewarm state for REPL startup.
@@ -284,6 +310,9 @@ class Orchestrator:
     async def run_task(self, task: str) -> dict[str, Any]:
         """Execute one user task end-to-end. Returns session id, messages, and final text."""
         session_id = new_session_id()
+        # Publish session id so ``SubAgentTool`` can stamp derived
+        # sub-session ids (``<sid>--sub-<N>``) on episodic appends.
+        self._current_session_id = session_id
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         domain = extract_domain(task)
 
@@ -371,6 +400,8 @@ class Orchestrator:
 
         All tool audit rows for every turn share the same ``session_id``.
         """
+        # Publish session id for ``SubAgentTool`` before any tool call.
+        self._current_session_id = session_id
         messages.append({"role": "user", "content": user_content})
 
         domain = extract_domain(user_content)

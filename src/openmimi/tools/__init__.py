@@ -21,6 +21,12 @@ from .collection import ToolCollection
 from .errors import ErrorCode, make_error_result, next_step_hint
 from .result import ToolResult
 
+# Note: ``SubAgentTool`` intentionally isn't re-exported here because it
+# imports ``openmimi.sub_agent``, which transitively imports ``loop``, which
+# imports ``openmimi.tools.collection`` — re-exporting would create an
+# import cycle. Consumers (currently only the orchestrator) should
+# ``from openmimi.tools.sub_agent_tool import SubAgentTool`` directly.
+
 __all__ = [
     "AgentBrowserTool",
     "BrowserAdvancedTool",
