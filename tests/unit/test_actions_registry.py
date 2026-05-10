@@ -15,6 +15,26 @@ def test_registry_has_navigation_actions() -> None:
         assert name in registered, f"missing migrated action: {name}"
 
 
+def test_registry_has_interaction_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "click",
+        "right_click",
+        "double_click",
+        "check",
+        "uncheck",
+        "type",
+        "fill",
+        "react_fill",
+        "press",
+        "key_combo",
+        "hover",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
 def test_get_returns_callable_for_known_action() -> None:
     from openmimi.tools import actions
 
@@ -107,3 +127,122 @@ async def test_forward_and_reload_call_correct_subcommand() -> None:
     await actions.get("forward")(eng, {})
     await actions.get("reload")(eng, {})
     assert captured == ["forward", "reload"]
+
+
+@pytest.mark.asyncio
+async def test_click_handler_returns_clicked_text_and_screenshot() -> None:
+    """click via ref must call ``click`` subcommand and refresh tabs."""
+    from openmimi.tools import actions
+
+    exec_calls: list[tuple[Any, ...]] = []
+    switched = 0
+
+    class _Engine:
+        _tabs: list[Any] = []
+        _active_tab_index = 0
+
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            exec_calls.append(args)
+            return SimpleNamespace(stdout='{"clicked":"button"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"clicked": "button"}
+
+        async def _switch_to_newest_tab(self) -> None:
+            nonlocal switched
+            switched += 1
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("click")(_Engine(), {"ref": "@e3"})
+    assert result.is_error is False
+    assert "Clicked button" in result.output
+    assert ("click", "@e3", "--json") in exec_calls
+    assert switched == 1
+
+
+@pytest.mark.asyncio
+async def test_click_requires_ref_or_target_text() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("click")(_Engine(), {})
+    assert "click requires" in result.output
+
+
+@pytest.mark.asyncio
+async def test_type_handler_uses_find_when_target_text_given() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("type")(
+        _Engine(), {"target_text": "Username", "value": "alice"}
+    )
+    assert "Typed 5 character(s)" in result.output
+    assert captured == [
+        ("find", "text", "Username", "type", "alice", "--json")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_press_handler_passes_key_to_exec() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("press")(_Engine(), {"key": "Tab"})
+    assert "Pressed Tab" in result.output
+    assert captured == [("press", "Tab", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_right_click_uses_box_then_mouse_sequence() -> None:
+    """right_click must compute box center, then drive move/down/up via ``mouse``."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            if args[:2] == ("get", "box"):
+                return SimpleNamespace(
+                    stdout='{"box":{"x":10,"y":20,"width":40,"height":20}}'
+                )
+            return SimpleNamespace(stdout="ok")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"box": {"x": 10, "y": 20, "width": 40, "height": 20}}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("right_click")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "Right-clicked @e1 at (30, 30)" in result.output
+    # ``get box`` first, then mouse move/down/up at center (30, 30)
+    assert captured[0] == ("get", "box", "@e1", "--json")
+    assert ("mouse", "move", "30", "30", "--json") in captured
+    assert ("mouse", "down", "right", "--json") in captured
+    assert ("mouse", "up", "right", "--json") in captured

@@ -77,3 +77,4 @@ __all__ = [
 # Keep these imports at the bottom so the decorator (defined above) is
 # already available when each module's @register calls fire.
 from . import navigation  # noqa: E402,F401  (side-effect: registration)
+from . import interaction  # noqa: E402,F401  (side-effect: registration)
