@@ -22,8 +22,9 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+from .compression import compress_tool_result, estimate_tokens
 from .llm.base import LLMClient
 from .planning import Plan, Verifier
 from .tools.collection import ToolCollection
@@ -134,6 +135,9 @@ async def sampling_loop(
     max_tokens: int = 4096,
     verifier: Verifier | None = None,
     plan: Plan | None = None,
+    compression_strategy: Literal["truncate", "summarize"] = "truncate",
+    max_context_tokens: int = 80000,
+    compress_llm: LLMClient | None = None,
 ) -> list[dict[str, Any]]:
     """Run the LLM-driven tool_use loop.
 
@@ -339,7 +343,13 @@ async def sampling_loop(
 
         messages.append({"role": "user", "content": tool_result_blocks})
         _trim_old_images(messages, only_n_most_recent_images)
-        _compress_old_tool_results(messages, max_context_turns=max_context_turns)
+        await _compress_old_tool_results(
+            messages,
+            max_context_turns=max_context_turns,
+            strategy=compression_strategy,
+            max_context_tokens=max_context_tokens,
+            compress_llm=compress_llm,
+        )
 
         if verifier is not None and plan is not None and not plan.is_complete():
             try:
@@ -497,17 +507,39 @@ def _trim_old_images(messages: list[dict[str, Any]], keep_n: int) -> None:
         parent[idx] = {"type": "text", "text": _OMITTED_IMAGE_PLACEHOLDER}
 
 
-def _compress_old_tool_results(
+_COMPRESSED_LLM_SUFFIX_FRAGMENT = "[compressed by LLM]"
+
+
+async def _compress_old_tool_results(
     messages: list[dict[str, Any]],
     max_context_turns: int = 10,
     truncate_len: int = 400,
+    *,
+    strategy: Literal["truncate", "summarize"] = "truncate",
+    max_context_tokens: int = 80000,
+    compress_llm: LLMClient | None = None,
+    summarize_target_chars: int = 500,
 ) -> None:
-    """Truncate text in old tool_result blocks to prevent unbounded growth.
+    """Shorten old tool_result text to prevent unbounded context growth.
 
     The first user message and the most recent ``max_context_turns``
     (assistant + user pairs) are left untouched. Older turns have their
-    tool_result text shortened so the full action trail is preserved but
+    tool_result text compressed so the full action trail is preserved but
     long HTML snapshots / error dumps don't eat the context window.
+
+    Strategy:
+      * ``"truncate"`` (default, legacy) — hard-cut each long text block at
+        ``truncate_len`` chars + ``_TRUNCATED_TEXT_SUFFIX``. Synchronous-style
+        path; ``max_context_tokens`` / ``compress_llm`` are ignored.
+      * ``"summarize"`` — only fires when the message-tail's approximate
+        token count exceeds ``max_context_tokens``; then walks the same
+        old-turn window and replaces each long text block with a 3-line
+        Did/Saw/Data summary via ``compress_tool_result``. If
+        ``compress_llm`` is ``None`` (or the LLM fails) the helper falls
+        back to truncation, so the worst case is the legacy behavior.
+
+    Both strategies are idempotent: blocks already carrying either suffix
+    are skipped on subsequent calls.
     """
     if max_context_turns < 0:
         return
@@ -519,6 +551,14 @@ def _compress_old_tool_results(
         return
 
     cutoff_idx = len(messages) - keep_count
+
+    if strategy == "summarize":
+        approx_tokens = sum(
+            estimate_tokens(_message_text(m)) for m in messages
+        )
+        if approx_tokens <= max_context_tokens:
+            return
+
     trimmed = 0
 
     for msg in messages[1:cutoff_idx]:
@@ -534,22 +574,76 @@ def _compress_old_tool_results(
             if not isinstance(sub, list):
                 continue
             for item in sub:
-                if (
-                    isinstance(item, dict)
-                    and item.get("type") == "text"
-                    and _TRUNCATED_TEXT_SUFFIX not in item.get("text", "")
-                ):
-                    text = item["text"]
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    continue
+                text = item.get("text", "")
+                if _TRUNCATED_TEXT_SUFFIX in text:
+                    continue
+                if _COMPRESSED_LLM_SUFFIX_FRAGMENT in text:
+                    continue
+                if strategy == "summarize":
+                    if len(text) <= summarize_target_chars:
+                        continue
+                    new_text = await compress_tool_result(
+                        text,
+                        compress_llm,
+                        target_chars=summarize_target_chars,
+                    )
+                    if new_text != text:
+                        item["text"] = new_text
+                        trimmed += 1
+                else:
                     if len(text) > truncate_len:
-                        item["text"] = text[:truncate_len] + _TRUNCATED_TEXT_SUFFIX
+                        item["text"] = (
+                            text[:truncate_len] + _TRUNCATED_TEXT_SUFFIX
+                        )
                         trimmed += 1
 
     if trimmed:
         _log.info(
-            "compressed %d old tool_result text block(s) (kept last %d turns)",
+            "compressed %d old tool_result text block(s) "
+            "(kept last %d turns, strategy=%s)",
             trimmed,
             max_context_turns,
+            strategy,
         )
+
+
+def _message_text(msg: dict[str, Any]) -> str:
+    """Best-effort text extraction for the token-budget estimator.
+
+    Walks both ``str`` and structured content shapes; for ``tool_result``
+    sub-blocks the text payload is included. Images are ignored (the
+    image-trim helper handles those separately). The exact format need
+    not be byte-perfect — ``estimate_tokens`` is itself a heuristic.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            parts.append(str(block.get("text", "")))
+        elif btype == "tool_use":
+            try:
+                parts.append(json.dumps(block.get("input") or {}))
+            except (TypeError, ValueError):
+                parts.append(str(block.get("input")))
+        elif btype == "tool_result":
+            sub = block.get("content")
+            if isinstance(sub, list):
+                for item in sub:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "text"
+                    ):
+                        parts.append(str(item.get("text", "")))
+    return "\n".join(parts)
 
 
 def _dump_prompt(

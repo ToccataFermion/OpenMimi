@@ -909,3 +909,210 @@ async def test_compress_tool_result_clips_input_before_sending_to_llm() -> None:
     user_prompt = llm.calls[0]["messages"][0]["content"]
     # default max_input_chars=8000; +/- prompt scaffolding stays well below 10000
     assert len(user_prompt) < 10_000
+
+
+# --- _compress_old_tool_results strategy / budget gate (#5 stage 3) -------
+
+
+def _msgs_with_old_long_tool_result(text: str) -> list[dict[str, Any]]:
+    """Build a 5-message list whose only old user message has a long
+    tool_result text block. With ``max_context_turns=0`` the last message
+    is kept and the middle three are eligible — the user(tool_result)
+    at index 2 is the one that gets compressed."""
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tu1",
+                    "name": "browser",
+                    "input": {"action": "screenshot"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tu2",
+                    "name": "browser",
+                    "input": {"action": "click"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu2",
+                    "content": [{"type": "text", "text": "fresh"}],
+                }
+            ],
+        },
+    ]
+
+
+def _extract_old_text(messages: list[dict[str, Any]]) -> str:
+    """Pull the text of the old tool_result block (msg index 2)."""
+    return messages[2]["content"][0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_compress_old_truncate_strategy_preserves_legacy_400_cut() -> None:
+    """``strategy="truncate"`` must hard-cut at 400 chars + legacy suffix."""
+    from openmimi.loop import _TRUNCATED_TEXT_SUFFIX, _compress_old_tool_results
+
+    messages = _msgs_with_old_long_tool_result("X" * 5000)
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="truncate",
+    )
+    out_text = _extract_old_text(messages)
+    assert out_text.startswith("X" * 400)
+    assert out_text.endswith(_TRUNCATED_TEXT_SUFFIX)
+    assert len(out_text) == 400 + len(_TRUNCATED_TEXT_SUFFIX)
+
+
+@pytest.mark.asyncio
+async def test_compress_old_summarize_skips_when_under_budget() -> None:
+    """When approx tokens <= ``max_context_tokens`` nothing is touched."""
+    from openmimi.loop import _compress_old_tool_results
+
+    original = "X" * 5000
+    messages = _msgs_with_old_long_tool_result(original)
+
+    llm = _ScriptedLLM([])  # would crash if invoked
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="summarize",
+        max_context_tokens=10_000_000,  # absurdly high → always under budget
+        compress_llm=llm,
+    )
+    assert _extract_old_text(messages) == original
+    assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_compress_old_summarize_invokes_llm_when_over_budget() -> None:
+    """Over-budget summarize replaces text with a Did/Saw/Data summary."""
+    from openmimi.loop import _compress_old_tool_results
+
+    original = "X" * 5000
+    messages = _msgs_with_old_long_tool_result(original)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Did: a\nSaw: b\nData: c"}
+                ],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="summarize",
+        max_context_tokens=10,  # tiny → always over budget
+        compress_llm=llm,
+        summarize_target_chars=300,
+    )
+    out_text = _extract_old_text(messages)
+    assert "[compressed by LLM]" in out_text
+    assert "Did: a" in out_text
+    assert len(out_text) < len(original)
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_compress_old_summarize_idempotent_on_second_pass() -> None:
+    """Already-compressed blocks must not be re-sent to the LLM."""
+    from openmimi.loop import _compress_old_tool_results
+
+    messages = _msgs_with_old_long_tool_result("X" * 5000)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Did: a\nSaw: b\nData: c"}
+                ],
+                "stop_reason": "end_turn",
+            }
+        ]
+    )
+    # First pass — should compress.
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="summarize",
+        max_context_tokens=10,
+        compress_llm=llm,
+    )
+    assert len(llm.calls) == 1
+    after_first = _extract_old_text(messages)
+
+    # Second pass — should be a no-op (no new LLM calls, text unchanged).
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="summarize",
+        max_context_tokens=10,
+        compress_llm=llm,
+    )
+    assert len(llm.calls) == 1
+    assert _extract_old_text(messages) == after_first
+
+
+@pytest.mark.asyncio
+async def test_compress_old_summarize_no_llm_falls_back_to_truncate() -> None:
+    """``compress_llm=None`` over-budget falls back to legacy truncation."""
+    from openmimi.loop import _TRUNCATED_TEXT_SUFFIX, _compress_old_tool_results
+
+    messages = _msgs_with_old_long_tool_result("X" * 5000)
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="summarize",
+        max_context_tokens=10,
+        compress_llm=None,
+        summarize_target_chars=200,
+    )
+    out_text = _extract_old_text(messages)
+    assert out_text.endswith(_TRUNCATED_TEXT_SUFFIX)
+    assert "[compressed by LLM]" not in out_text
+
+
+@pytest.mark.asyncio
+async def test_compress_old_truncate_idempotent_on_already_truncated() -> None:
+    """Truncate strategy also skips blocks already carrying the suffix."""
+    from openmimi.loop import _TRUNCATED_TEXT_SUFFIX, _compress_old_tool_results
+
+    pre_truncated = "Y" * 100 + _TRUNCATED_TEXT_SUFFIX
+    messages = _msgs_with_old_long_tool_result(pre_truncated)
+    await _compress_old_tool_results(
+        messages,
+        max_context_turns=0,
+        strategy="truncate",
+    )
+    # No re-truncation: the suffix appears exactly once.
+    assert _extract_old_text(messages).count(_TRUNCATED_TEXT_SUFFIX) == 1
