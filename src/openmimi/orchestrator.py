@@ -99,6 +99,7 @@ class Orchestrator:
         browser_engine: AgentBrowserTool | None = None,
         planner: LLMPlanner | None = None,
         verifier: Verifier | None = None,
+        compress_llm: LLMClient | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
@@ -108,6 +109,7 @@ class Orchestrator:
         self._browser_engine = browser_engine
         self.planner = planner
         self.verifier = verifier
+        self._compress_llm = compress_llm
 
     @classmethod
     def from_env(
@@ -223,6 +225,13 @@ class Orchestrator:
             planner = LLMPlanner(llm)
             verifier = LLMVerifier(llm)
 
+        # Reuse the main LLMClient for cheap compression calls when the
+        # summarize strategy is on (same decision as #7 stage 3c — keep
+        # one channel rather than wire a separate cheap-model client).
+        compress_llm: LLMClient | None = (
+            llm if cfg.compression_strategy == "summarize" else None
+        )
+
         return cls(
             config=cfg,
             llm=llm,
@@ -232,6 +241,7 @@ class Orchestrator:
             browser_engine=browser_engine,
             planner=planner,
             verifier=verifier,
+            compress_llm=compress_llm,
         )
 
     def prewarm_browser(self) -> bool:
@@ -277,6 +287,9 @@ class Orchestrator:
                 system=system,
                 verifier=verifier,
                 plan=plan,
+                compression_strategy=self.config.compression_strategy,
+                max_context_tokens=self.config.max_context_tokens,
+                compress_llm=self._compress_llm,
             )
         finally:
             await self.tools.close_all()
@@ -359,6 +372,9 @@ class Orchestrator:
             system=system,
             verifier=verifier,
             plan=plan,
+            compression_strategy=self.config.compression_strategy,
+            max_context_tokens=self.config.max_context_tokens,
+            compress_llm=self._compress_llm,
         )
         return _extract_last_assistant_text(messages)
 

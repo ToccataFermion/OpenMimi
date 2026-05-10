@@ -542,3 +542,116 @@ def test_from_env_leaves_planner_none_when_disabled(
     orch = Orchestrator.from_env(config=cfg)
     assert orch.planner is None
     assert orch.verifier is None
+
+
+# --- Compression strategy + token budget wiring (#5 stage 4) ----------------
+
+
+@pytest.mark.asyncio
+async def test_run_task_passes_compression_kwargs_to_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All three #5 kwargs must flow from AppConfig through to sampling_loop."""
+    captured = _capture_sampling_loop(monkeypatch)
+    sentinel_llm = object()
+    orch, _ = _make_orch(tmp_path, llm=sentinel_llm)
+    orch.config.compression_strategy = "summarize"
+    orch.config.max_context_tokens = 12345
+    orch._compress_llm = sentinel_llm
+
+    await orch.run_task("hi")
+
+    assert captured["compression_strategy"] == "summarize"
+    assert captured["max_context_tokens"] == 12345
+    assert captured["compress_llm"] is sentinel_llm
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_passes_compression_kwargs_to_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_chat_turn` must thread the same #5 kwargs as `run_task`."""
+    captured = _capture_sampling_loop(monkeypatch)
+    sentinel_llm = object()
+    orch, _ = _make_orch(tmp_path, llm=sentinel_llm)
+    orch.config.compression_strategy = "summarize"
+    orch.config.max_context_tokens = 9999
+    orch._compress_llm = sentinel_llm
+
+    messages: list[dict[str, Any]] = []
+    await orch.run_chat_turn(
+        messages=messages, session_id="s-x", user_content="anything"
+    )
+
+    assert captured["compression_strategy"] == "summarize"
+    assert captured["max_context_tokens"] == 9999
+    assert captured["compress_llm"] is sentinel_llm
+
+
+@pytest.mark.asyncio
+async def test_run_task_truncate_strategy_passes_none_compress_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default `"truncate"` must keep compress_llm at None even with an LLM injected."""
+    captured = _capture_sampling_loop(monkeypatch)
+    orch, _ = _make_orch(tmp_path, llm=object())
+    # Default config: compression_strategy == "truncate", compress_llm not set
+    await orch.run_task("hi")
+    assert captured["compression_strategy"] == "truncate"
+    assert captured["compress_llm"] is None
+
+
+def test_from_env_summarize_strategy_wires_compress_llm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`compression_strategy="summarize"` reuses the main LLMClient."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    sentinel_llm = object()
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient",
+        lambda **kw: sentinel_llm,
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool",
+        lambda **kw: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+    cfg.compression_strategy = "summarize"
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert orch.llm is sentinel_llm
+    assert orch._compress_llm is sentinel_llm  # reused, not a new channel
+
+
+def test_from_env_truncate_strategy_leaves_compress_llm_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default `"truncate"` strategy must NOT wire compress_llm."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient",
+        lambda **kw: object(),
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool",
+        lambda **kw: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+    # cfg.compression_strategy defaults to "truncate"
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert orch._compress_llm is None
