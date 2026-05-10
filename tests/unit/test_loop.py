@@ -519,3 +519,211 @@ async def test_audit_optional() -> None:
         messages=messages, tools=coll, llm=llm, session_id="s"
     )
     assert len(out) == 4
+
+
+# --- Verifier wiring (#7 stage 2) -------------------------------------------
+
+from openmimi.planning import NullVerifier, Plan, PlanStep
+
+
+class _RecordingVerifier:
+    """Records every verify() call and returns scripted outcomes."""
+
+    def __init__(self, outcomes: list[str]) -> None:
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple[Plan, int]] = []
+
+    async def verify(
+        self, plan: Plan, recent_messages: list[dict[str, Any]]
+    ) -> str:
+        self.calls.append((plan, len(recent_messages)))
+        if not self._outcomes:
+            return "continue"
+        return self._outcomes.pop(0)
+
+
+def _make_two_turn_llm() -> _ScriptedLLM:
+    """LLM that does two browser turns then ends. Used for verifier tests."""
+    return _ScriptedLLM(
+        [
+            _assistant(
+                [_tool_use("a", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant(
+                [_tool_use("b", "browser", {"action": "screenshot"})],
+                stop_reason="tool_use",
+            ),
+            _assistant([_text("end")], stop_reason="end_turn"),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_verifier_means_no_invocation() -> None:
+    """When verifier+plan are both None the loop must run unchanged."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages, tools=coll, llm=llm, session_id="s"
+    )
+
+    # 1 user + 3 assistant + 2 user(tool_results) = 6 messages
+    assert len(out) == 6
+    assert out[-1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_verifier_without_plan_is_skipped() -> None:
+    """Verifier is provided but plan is None → fast-path skip."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+
+    verifier = _RecordingVerifier(["done"])  # would short-circuit if invoked
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=None,
+    )
+
+    assert verifier.calls == []
+    assert len(out) == 6  # ran to natural end_turn, ignoring "done" outcome
+
+
+@pytest.mark.asyncio
+async def test_null_verifier_lets_loop_continue_normally() -> None:
+    """NullVerifier always returns 'continue' → loop runs to natural end."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    verifier = NullVerifier()
+    plan = Plan(
+        steps=[PlanStep(step="screenshot the page", success_criteria="image taken")]
+    )
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=plan,
+    )
+
+    # NullVerifier never says "done" → all 3 LLM turns happen.
+    assert len(out) == 6
+
+
+@pytest.mark.asyncio
+async def test_verifier_done_ends_loop_early() -> None:
+    """verifier returning 'done' on turn 1 ends the loop before turn 2."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    verifier = _RecordingVerifier(["done"])
+    plan = Plan(steps=[PlanStep(step="capture", success_criteria="png")])
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=plan,
+    )
+
+    assert len(verifier.calls) == 1
+    assert len(llm.calls) == 1  # only the first turn ran
+    # 1 user + 1 assistant (turn 1) + 1 user(tool_results) = 3 messages
+    assert len(out) == 3
+
+
+@pytest.mark.asyncio
+async def test_verifier_replan_does_not_end_loop() -> None:
+    """'replan' is a stage-3 hook; for stage 2 the loop just keeps going."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    verifier = _RecordingVerifier(["replan", "continue"])
+    plan = Plan(steps=[PlanStep(step="capture", success_criteria="png")])
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=plan,
+    )
+
+    assert len(verifier.calls) == 2  # one per turn (3 LLM turns, 2 with tools)
+    assert len(out) == 6
+
+
+@pytest.mark.asyncio
+async def test_verifier_exception_does_not_crash_loop() -> None:
+    """A verifier that raises should be logged-and-ignored, not propagated."""
+
+    class _ExplodingVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def verify(
+            self, plan: Plan, recent_messages: list[dict[str, Any]]
+        ) -> str:
+            self.calls += 1
+            raise RuntimeError("verifier exploded")
+
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    verifier = _ExplodingVerifier()
+    plan = Plan(steps=[PlanStep(step="capture", success_criteria="png")])
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=plan,
+    )
+
+    assert verifier.calls == 2  # invoked on each of the 2 tool-result turns
+    assert len(out) == 6  # loop ran to natural end despite exceptions
+
+
+@pytest.mark.asyncio
+async def test_verifier_skipped_when_plan_complete() -> None:
+    """An already-complete Plan should bypass verifier invocation entirely."""
+    llm = _make_two_turn_llm()
+    tool = _FakeTool(ToolResult(output="ok"))
+    coll = _make_collection(tool)
+    verifier = _RecordingVerifier(["done"])  # would short-circuit if invoked
+    plan = Plan(steps=[])  # empty plan = is_complete() True
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "go"}]
+    out = await sampling_loop(
+        messages=messages,
+        tools=coll,
+        llm=llm,
+        session_id="s",
+        verifier=verifier,
+        plan=plan,
+    )
+
+    assert verifier.calls == []
+    assert len(out) == 6

@@ -25,6 +25,7 @@ import time
 from typing import Any, Protocol
 
 from .llm.base import LLMClient
+from .planning import Plan, Verifier
 from .tools.collection import ToolCollection
 from .tools.errors import ErrorCode
 from .tools.result import ToolResult
@@ -131,6 +132,8 @@ async def sampling_loop(
     only_n_most_recent_images: int = 2,
     max_context_turns: int = 10,
     max_tokens: int = 4096,
+    verifier: Verifier | None = None,
+    plan: Plan | None = None,
 ) -> list[dict[str, Any]]:
     """Run the LLM-driven tool_use loop.
 
@@ -139,7 +142,21 @@ async def sampling_loop(
     The loop terminates when:
       - the assistant produces no `tool_use` block (or `stop_reason != "tool_use"`),
       - the turn budget `max_turns` is exhausted,
-      - any unhandled exception escapes (caller decides whether to retry).
+      - any unhandled exception escapes (caller decides whether to retry),
+      - a non-Null ``verifier`` returns ``"done"`` for the active ``plan``.
+
+    ``verifier`` + ``plan`` together implement roadmap #7 stage 2's
+    turn-end self-evaluation. When both are present and the plan is not
+    yet complete, the loop invokes ``verifier.verify(plan, messages)``
+    once per turn (after tool results are appended). Outcomes:
+      - ``done`` → return immediately (the assistant's last message stays
+        as the final reply).
+      - ``replan`` → log a marker; stage 3 will hook a Planner here. For
+        stage 2 we just continue the loop unchanged.
+      - ``continue`` (or any unexpected value) → no-op.
+    Either argument being ``None`` skips verification entirely (fast path,
+    zero cost). The default ``NullVerifier`` always returns ``continue``,
+    so even an "always-on" wiring is safe when planning is disabled.
     """
     step = 0
 
@@ -323,6 +340,21 @@ async def sampling_loop(
         messages.append({"role": "user", "content": tool_result_blocks})
         _trim_old_images(messages, only_n_most_recent_images)
         _compress_old_tool_results(messages, max_context_turns=max_context_turns)
+
+        if verifier is not None and plan is not None and not plan.is_complete():
+            try:
+                outcome = await verifier.verify(plan, messages)
+            except Exception as exc:
+                _log.warning("verifier raised %s: %s", exc.__class__.__name__, exc)
+                outcome = "continue"
+            if outcome == "done":
+                _log.info("verifier reported plan complete; ending loop")
+                return messages
+            if outcome == "replan":
+                # Stage 3 will hook the Planner here. For now just surface
+                # that the verifier asked for a replan so operators can
+                # see it in stderr / audit.
+                _tool_progress("[planner] verifier requested replan (stage 3 hook)")
 
     return messages
 
