@@ -727,3 +727,32 @@ async def test_verifier_skipped_when_plan_complete() -> None:
 
     assert verifier.calls == []
     assert len(out) == 6
+
+
+# --- Token-budget / compression (roadmap #5 stage 1) -----------------------
+
+
+def test_appconfig_defaults_max_context_tokens_and_strategy() -> None:
+    """Stage 1 ships only schema fields; defaults must preserve legacy behavior."""
+    from openmimi.config.schema import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.max_context_tokens == 80000
+    assert cfg.compression_strategy == "truncate"
+
+
+def test_appconfig_compression_strategy_rejects_invalid() -> None:
+    """The Literal type should validate the strategy string."""
+    from pydantic import ValidationError
+
+    from openmimi.config.schema import AppConfig
+
+    with pytest.raises(ValidationError):
+        AppConfig(compression_strategy="summary")  # type: ignore[arg-type]
+
+
+def test_appconfig_compression_strategy_accepts_summarize() -> None:
+    from openmimi.config.schema import AppConfig
+
+    cfg = AppConfig(compression_strategy="summarize")
+    assert cfg.compression_strategy == "summarize"
