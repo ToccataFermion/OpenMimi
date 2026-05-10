@@ -20,6 +20,7 @@ from .llm import AnthropicClient, OpenAIChatClient
 from .llm.base import LLMClient
 from .loop import _DEFAULT_SYSTEM_PROMPT, sampling_loop
 from .memory.site_store import SiteMemoryStore, extract_domain
+from .planning import LLMPlanner, LLMVerifier, NullVerifier, Plan, Verifier
 from .tools import (
     AgentBrowserTool,
     BrowserAdvancedTool,
@@ -37,13 +38,34 @@ from .utils.ids import new_session_id
 _DEFAULT_LLM_TIMEOUT_S = 90.0
 
 
+def _format_plan_summary(plan: Plan) -> str:
+    """Render a Plan as a numbered list for the system prompt.
+
+    Empty plans return an empty string so callers can skip the section
+    entirely. Each step is one line including its success criteria, so
+    the Verifier and the Executor see the same ground truth.
+    """
+    if not plan.steps:
+        return ""
+    lines = ["Planned approach (verifier will grade each step):"]
+    for i, step in enumerate(plan.steps, 1):
+        lines.append(
+            f"  {i}. {step.step} [success: {step.success_criteria}]"
+        )
+    return "\n".join(lines)
+
+
 def _build_system_prompt(
-    domain: str | None, memory: SiteMemoryStore | None = None
+    domain: str | None,
+    memory: SiteMemoryStore | None = None,
+    plan: Plan | None = None,
 ) -> str:
-    """Assemble system prompt from defaults + per-site memory.
+    """Assemble system prompt from defaults + per-site memory + optional plan.
 
     Site memory (if present for *domain*) is appended verbatim so the agent
     starts each session with whatever lessons the previous one summarized.
+    A non-empty Plan is rendered after the site memory so the Executor can
+    see the steps the Verifier will grade against.
     """
     system = _DEFAULT_SYSTEM_PROMPT
     extras: list[str] = []
@@ -52,6 +74,11 @@ def _build_system_prompt(
         site_text = memory.format_for_prompt(domain)
         if site_text:
             extras.append(site_text)
+
+    if plan is not None:
+        plan_text = _format_plan_summary(plan)
+        if plan_text:
+            extras.append(plan_text)
 
     if extras:
         system = f"{system}\n\n" + "\n\n".join(extras)
@@ -70,6 +97,8 @@ class Orchestrator:
         audit: JsonlAuditLogger | None = None,
         memory: SiteMemoryStore | None = None,
         browser_engine: AgentBrowserTool | None = None,
+        planner: LLMPlanner | None = None,
+        verifier: Verifier | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
@@ -77,6 +106,8 @@ class Orchestrator:
         self.audit = audit
         self.memory = memory
         self._browser_engine = browser_engine
+        self.planner = planner
+        self.verifier = verifier
 
     @classmethod
     def from_env(
@@ -186,6 +217,12 @@ class Orchestrator:
         )
         memory = SiteMemoryStore()
 
+        planner: LLMPlanner | None = None
+        verifier: Verifier | None = None
+        if cfg.enable_planning:
+            planner = LLMPlanner(llm)
+            verifier = LLMVerifier(llm)
+
         return cls(
             config=cfg,
             llm=llm,
@@ -193,6 +230,8 @@ class Orchestrator:
             audit=audit,
             memory=memory,
             browser_engine=browser_engine,
+            planner=planner,
+            verifier=verifier,
         )
 
     def prewarm_browser(self) -> bool:
@@ -221,7 +260,9 @@ class Orchestrator:
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         domain = extract_domain(task)
 
-        system = _build_system_prompt(domain, self.memory)
+        plan = await self._maybe_plan_task(task, domain)
+        system = _build_system_prompt(domain, self.memory, plan)
+        verifier = self._effective_verifier(plan)
 
         try:
             await sampling_loop(
@@ -234,6 +275,8 @@ class Orchestrator:
                 only_n_most_recent_images=self.config.only_n_most_recent_images,
                 max_context_turns=self.config.max_context_turns,
                 system=system,
+                verifier=verifier,
+                plan=plan,
             )
         finally:
             await self.tools.close_all()
@@ -300,7 +343,9 @@ class Orchestrator:
         messages.append({"role": "user", "content": user_content})
 
         domain = extract_domain(user_content)
-        system = _build_system_prompt(domain, self.memory)
+        plan = await self._maybe_plan_task(user_content, domain)
+        system = _build_system_prompt(domain, self.memory, plan)
+        verifier = self._effective_verifier(plan)
 
         await sampling_loop(
             messages=messages,
@@ -312,6 +357,8 @@ class Orchestrator:
             only_n_most_recent_images=self.config.only_n_most_recent_images,
             max_context_turns=self.config.max_context_turns,
             system=system,
+            verifier=verifier,
+            plan=plan,
         )
         return _extract_last_assistant_text(messages)
 
@@ -331,6 +378,51 @@ class Orchestrator:
                 self.memory.save(domain, merged)
         except Exception:
             pass
+
+    async def _maybe_plan_task(
+        self, task: str, domain: str | None
+    ) -> Plan | None:
+        """Run the Planner if planning is enabled and a planner is configured.
+
+        Returns None when planning is off OR no planner was injected, so
+        `sampling_loop` keeps its legacy unplanned behavior. Errors inside
+        the planner fall back to a single-step Plan (the LLMPlanner does
+        this itself), so this method never raises.
+        """
+        if not self.config.enable_planning or self.planner is None:
+            return None
+        context = self._planner_context(domain)
+        try:
+            return await self.planner.plan_task(task, context)
+        except Exception:
+            # Defensive: the planner is supposed to swallow its own errors,
+            # but a buggy custom planner shouldn't take down the loop.
+            return None
+
+    def _planner_context(self, domain: str | None) -> str:
+        """Build the `system_context` string passed to `LLMPlanner.plan_task`.
+
+        Surfaces the per-site memory (if any) so the planner can craft
+        steps that respect what the agent already knows about the domain.
+        """
+        if domain and self.memory is not None:
+            site_text = self.memory.format_for_prompt(domain)
+            if site_text:
+                return site_text
+        return ""
+
+    def _effective_verifier(self, plan: Plan | None) -> Verifier | None:
+        """Pick the Verifier instance to pass to `sampling_loop`.
+
+        Only meaningful when we actually have a plan to grade against;
+        without a plan, the loop ignores the verifier anyway, so we save
+        an LLM call by returning None. If planning is enabled but no
+        verifier was injected, fall back to a `NullVerifier` so the loop
+        wiring stays consistent.
+        """
+        if plan is None or not self.config.enable_planning:
+            return None
+        return self.verifier or NullVerifier()
 
     async def save_chat_memory(self, messages: list[dict[str, Any]]) -> None:
         """Persist site memory after a chat session ends.

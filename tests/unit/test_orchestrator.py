@@ -8,7 +8,8 @@ import pytest
 
 from openmimi.audit import JsonlAuditLogger
 from openmimi.config.schema import AppConfig
-from openmimi.orchestrator import Orchestrator
+from openmimi.orchestrator import Orchestrator, _build_system_prompt, _format_plan_summary
+from openmimi.planning import LLMPlanner, NullVerifier, Plan, PlanStep
 from openmimi.tools.base import ToolBase
 from openmimi.tools.collection import ToolCollection
 from openmimi.tools.result import ToolResult
@@ -277,3 +278,267 @@ def test_from_env_falls_back_when_timeout_invalid(
     Orchestrator.from_env(config=cfg)
 
     assert captured["request_timeout_s"] == 90.0
+
+
+# --- Planner / Verifier integration (#7 stage 3c) ---------------------------
+
+
+def _format_plan_summary_helper(steps: list[tuple[str, str]]) -> Plan:
+    return Plan(
+        steps=[PlanStep(step=s, success_criteria=c) for s, c in steps]
+    )
+
+
+def test_format_plan_summary_renders_numbered_list() -> None:
+    plan = _format_plan_summary_helper(
+        [("open page", "page loaded"), ("search", ">=1 result")]
+    )
+    summary = _format_plan_summary(plan)
+    assert "Planned approach" in summary
+    assert "1. open page [success: page loaded]" in summary
+    assert "2. search [success: >=1 result]" in summary
+
+
+def test_format_plan_summary_returns_empty_for_empty_plan() -> None:
+    assert _format_plan_summary(Plan()) == ""
+
+
+def test_build_system_prompt_appends_plan_summary() -> None:
+    plan = _format_plan_summary_helper([("a", "ok"), ("b", "ok")])
+    prompt = _build_system_prompt(None, None, plan)
+    assert "Planned approach" in prompt
+    assert "1. a [success: ok]" in prompt
+
+
+def test_build_system_prompt_skips_empty_plan() -> None:
+    prompt_with_empty = _build_system_prompt(None, None, Plan())
+    prompt_without = _build_system_prompt(None, None, None)
+    assert prompt_with_empty == prompt_without
+
+
+class _ScriptedPlanner:
+    """LLMPlanner-compatible stub that returns a preset Plan or raises."""
+
+    def __init__(self, plan: Plan | Exception | None) -> None:
+        self._plan = plan
+        self.calls: list[tuple[str, str]] = []
+
+    async def plan_task(self, task: str, system_context: str = "") -> Plan:
+        self.calls.append((task, system_context))
+        if isinstance(self._plan, Exception):
+            raise self._plan
+        if self._plan is None:
+            return Plan()
+        return self._plan
+
+
+def _make_planning_orch(
+    tmp_path: Path,
+    llm: Any,
+    *,
+    planner: Any | None = None,
+    verifier: Any | None = None,
+    enable_planning: bool = True,
+) -> tuple[Orchestrator, _NoopTool]:
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.max_turns = 5
+    cfg.enable_planning = enable_planning
+
+    tools = ToolCollection()
+    tool = _NoopTool()
+    tools.register(tool)
+
+    audit = JsonlAuditLogger(
+        audit_dir=cfg.storage.audit_dir, screen_dir=cfg.storage.screen_dir
+    )
+
+    orch = Orchestrator(
+        config=cfg,
+        llm=llm,
+        tools=tools,
+        audit=audit,
+        planner=planner,
+        verifier=verifier,
+    )
+    return orch, tool
+
+
+def _capture_sampling_loop(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace orchestrator.sampling_loop with a no-op that records kwargs."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_loop(**kwargs: Any) -> list[dict[str, Any]]:
+        captured.update(kwargs)
+        messages = kwargs["messages"]
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "stub-final"}],
+            }
+        )
+        return messages
+
+    monkeypatch.setattr("openmimi.orchestrator.sampling_loop", _fake_loop)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_run_task_skips_planner_when_planning_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_sampling_loop(monkeypatch)
+    plan = _format_plan_summary_helper([("a", "ok")])
+    planner = _ScriptedPlanner(plan)
+    orch, _ = _make_planning_orch(
+        tmp_path,
+        llm=object(),
+        planner=planner,
+        enable_planning=False,
+    )
+    await orch.run_task("a task")
+    assert planner.calls == []
+    assert captured["plan"] is None
+    assert captured["verifier"] is None
+    assert "Planned approach" not in captured["system"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_invokes_planner_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_sampling_loop(monkeypatch)
+    plan = _format_plan_summary_helper(
+        [("open homepage", "page loaded"), ("search", ">=1 result")]
+    )
+    planner = _ScriptedPlanner(plan)
+    orch, _ = _make_planning_orch(
+        tmp_path,
+        llm=object(),
+        planner=planner,
+        enable_planning=True,
+    )
+    await orch.run_task("buy a laptop")
+    assert len(planner.calls) == 1
+    assert planner.calls[0][0] == "buy a laptop"
+    assert captured["plan"] is plan
+    assert captured["verifier"] is not None
+    assert "Planned approach" in captured["system"]
+    assert "open homepage" in captured["system"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_uses_null_verifier_when_only_planner_injected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_sampling_loop(monkeypatch)
+    plan = _format_plan_summary_helper([("a", "ok")])
+    planner = _ScriptedPlanner(plan)
+    orch, _ = _make_planning_orch(
+        tmp_path,
+        llm=object(),
+        planner=planner,
+        verifier=None,
+        enable_planning=True,
+    )
+    await orch.run_task("x")
+    assert isinstance(captured["verifier"], NullVerifier)
+
+
+@pytest.mark.asyncio
+async def test_run_task_swallows_planner_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_sampling_loop(monkeypatch)
+    planner = _ScriptedPlanner(RuntimeError("planner is down"))
+    orch, _ = _make_planning_orch(
+        tmp_path,
+        llm=object(),
+        planner=planner,
+        enable_planning=True,
+    )
+    result = await orch.run_task("x")
+    assert result["final_text"] == "stub-final"
+    assert captured["plan"] is None
+    assert captured["verifier"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_invokes_planner_per_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_sampling_loop(monkeypatch)
+    plan = _format_plan_summary_helper([("a", "ok")])
+    planner = _ScriptedPlanner(plan)
+    orch, _ = _make_planning_orch(
+        tmp_path,
+        llm=object(),
+        planner=planner,
+        enable_planning=True,
+    )
+    messages: list[dict[str, Any]] = []
+    await orch.run_chat_turn(
+        messages=messages, session_id="s-x", user_content="first thing"
+    )
+    await orch.run_chat_turn(
+        messages=messages, session_id="s-x", user_content="second thing"
+    )
+    assert [c[0] for c in planner.calls] == ["first thing", "second thing"]
+    assert captured["plan"] is plan
+
+
+def test_from_env_constructs_planner_and_verifier_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient",
+        lambda **kw: object(),
+    )
+
+    # Avoid spinning a real browser daemon in this unit test.
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool",
+        lambda **kw: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+    cfg.enable_planning = True
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert isinstance(orch.planner, LLMPlanner)
+    assert orch.verifier is not None  # LLMVerifier
+
+
+def test_from_env_leaves_planner_none_when_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient",
+        lambda **kw: object(),
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool",
+        lambda **kw: object(),
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+    cfg.enable_planning = False
+
+    orch = Orchestrator.from_env(config=cfg)
+    assert orch.planner is None
+    assert orch.verifier is None
