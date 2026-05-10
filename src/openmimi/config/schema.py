@@ -32,3 +32,6 @@ class AppConfig(BaseModel):
     max_turns: int = 50
     only_n_most_recent_images: int = 2
     max_context_turns: int = 10  # keep this many recent turns intact; truncate older tool results
+    # Planner / Executor / Verifier triangle (roadmap #7). Stage 1 ships only
+    # the data structures and a NullVerifier; flip this once stages 2-3 land.
+    enable_planning: bool = False
