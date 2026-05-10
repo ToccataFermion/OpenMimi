@@ -785,3 +785,277 @@ async def test_clear_cache_runs_eval_and_reports_ok() -> None:
     assert captured[0][0] == "eval"
     assert "localStorage.clear()" in captured[0][1]
 
+
+def test_registry_has_network_cdp_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "cdp",
+        "screenshot",
+        "network_log",
+        "network_modify",
+        "storage",
+        "pdf",
+        "console",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_cdp_handler_unwraps_result_value() -> None:
+    """cdp must wrap caller args into __openmimi_cdp_send and surface result."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true,"result":{"data":42}}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "result": {"data": 42}}}
+
+    result = await actions.get("cdp")(
+        _Engine(), {"cdp_method": "Runtime.evaluate", "cdp_params": {"expression": "1+1"}}
+    )
+    assert result.is_error is False
+    # Output is JSON-encoded result_value (full {ok, result})
+    assert '"data": 42' in result.output
+    assert captured[0][0] == "eval"
+    assert "Runtime.evaluate" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_cdp_requires_cdp_method() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("cdp")(_Engine(), {})
+    assert result.is_error is True
+    assert "cdp_method" in result.output
+
+
+@pytest.mark.asyncio
+async def test_screenshot_returns_image_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """screenshot must call engine._take_screenshot and return its bytes as base64."""
+    from openmimi.tools.actions import network_cdp
+
+    monkeypatch.setattr(network_cdp, "screenshots_disabled", lambda: False)
+
+    class _Engine:
+        async def _take_screenshot(self, path_override: str | None = None, annotate: bool = False) -> str | None:
+            return "fake_b64"
+
+    from openmimi.tools import actions
+
+    result = await actions.get("screenshot")(_Engine(), {})
+    assert result.is_error is False
+    assert result.base64_image == "fake_b64"
+    assert "Screenshot taken" in result.output
+
+
+@pytest.mark.asyncio
+async def test_screenshot_blocked_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openmimi.tools.actions import network_cdp
+
+    monkeypatch.setattr(network_cdp, "screenshots_disabled", lambda: True)
+
+    class _Engine:
+        async def _take_screenshot(self, **_kw: Any) -> str | None:  # pragma: no cover
+            raise AssertionError("must not call screenshot when disabled")
+
+    from openmimi.tools import actions
+
+    result = await actions.get("screenshot")(_Engine(), {})
+    assert result.is_error is False
+    assert "Screenshots disabled" in result.output
+    assert result.base64_image is None
+
+
+@pytest.mark.asyncio
+async def test_network_log_installs_hook_then_reads_requests() -> None:
+    """First eval installs interceptor; second returns captured requests."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"requests":[{"url":"x"}],"count":1}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"requests": [{"url": "x"}], "count": 1}
+
+    result = await actions.get("network_log")(_Engine(), {"duration_ms": 0, "filter": "x"})
+    assert result.is_error is False
+    # First call installs interceptor (mentions __openmimi_network_hooked).
+    assert "__openmimi_network_hooked" in payloads[0]
+    # Output must include captured request count.
+    assert '"count"' in result.output
+    assert result.details is not None
+    assert result.details["requests"] == [{"url": "x"}]
+
+
+@pytest.mark.asyncio
+async def test_network_modify_inject_headers_requires_headers() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("network_modify")(
+        _Engine(), {"modify_action": "inject_headers"}
+    )
+    assert result.is_error is True
+    assert "headers" in result.output
+
+
+@pytest.mark.asyncio
+async def test_network_modify_user_agent_calls_eval() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true,"method":"cdp"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "method": "cdp"}}
+
+    result = await actions.get("network_modify")(
+        _Engine(), {"modify_action": "user_agent", "user_agent": "Mozilla/Test"}
+    )
+    assert result.is_error is False
+    assert "User-Agent set to" in result.output
+    assert captured[0][0] == "eval"
+    assert "Network.setUserAgentOverride" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_storage_localstorage_set_writes_via_eval() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True}}
+
+    result = await actions.get("storage")(
+        _Engine(),
+        {
+            "storage_action": "set",
+            "storage_type": "localStorage",
+            "storage_key": "k",
+            "storage_value": "v",
+        },
+    )
+    assert result.is_error is False
+    assert captured[0][0] == "eval"
+    assert "localStorage.setItem" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_storage_set_localstorage_requires_key() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("storage")(
+        _Engine(), {"storage_action": "set", "storage_type": "localStorage"}
+    )
+    assert result.is_error is True
+    assert "storage_key" in result.output
+
+
+@pytest.mark.asyncio
+async def test_storage_cookies_get_uses_cdp_first() -> None:
+    """Cookie reads must call CDP Network.getAllCookies in the first eval payload."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"ok":true,"method":"cdp","cookies":[]}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "method": "cdp", "cookies": []}}
+
+    result = await actions.get("storage")(
+        _Engine(), {"storage_action": "get", "storage_type": "cookies"}
+    )
+    assert result.is_error is False
+    assert "Network.getAllCookies" in payloads[0]
+    assert result.details is not None
+    assert result.details["method"] == "cdp"
+
+
+@pytest.mark.asyncio
+async def test_pdf_requires_file_path() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("pdf")(_Engine(), {})
+    assert result.is_error is True
+    assert "file_path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_pdf_happy_path_reports_saved() -> None:
+    """When CDP printToPDF reports ok, handler returns 'PDF saved to ...'."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":{"ok":true,"path":"/tmp/x.pdf"}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "path": "/tmp/x.pdf"}}
+
+    result = await actions.get("pdf")(_Engine(), {"file_path": "/tmp/x.pdf"})
+    assert result.is_error is False
+    assert "PDF saved to /tmp/x.pdf" in result.output
+    # Must call eval with Page.printToPDF in payload.
+    assert captured[0][0] == "eval"
+    assert "Page.printToPDF" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_console_installs_hook_then_reads_logs() -> None:
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":{"count":1,"logs":[{"level":"error","message":"boom"}]}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"count": 1, "logs": [{"level": "error", "message": "boom"}]}}
+
+    result = await actions.get("console")(_Engine(), {"console_level": "error"})
+    assert result.is_error is False
+    # First call installs hook (mentions __openmimi_console_logs).
+    assert "__openmimi_console_logs" in payloads[0]
+    assert '"level": "error"' in result.output
+
