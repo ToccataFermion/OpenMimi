@@ -171,6 +171,20 @@ def _print_welcome(session_id: str) -> None:
     print()
 
 
+def _announce_prewarm(orch: Any) -> None:
+    """Print a one-line note when the browser daemon is still warming up.
+
+    The actual warmup is fired eagerly in ``AgentBrowserTool.__init__``; this
+    just surfaces it so the user understands why the first task may be slow
+    on a cold Windows machine.
+    """
+    try:
+        if orch.prewarm_browser():
+            print("  browser : warming up in background (first task may be slow)")
+    except Exception:
+        pass
+
+
 @app.command()
 def chat(
     screenshots: bool = typer.Option(
@@ -195,6 +209,7 @@ def chat(
         session_id = new_session_id()
         messages: list[dict[str, Any]] = []
         _print_welcome(session_id)
+        _announce_prewarm(orch)
         try:
             while True:
                 try:
@@ -310,6 +325,7 @@ def chat_main() -> None:
         session_id = new_session_id()
         messages: list[dict[str, Any]] = []
         _print_welcome(session_id)
+        _announce_prewarm(orch)
         try:
             while True:
                 try:

@@ -69,12 +69,14 @@ class Orchestrator:
         tools: ToolCollection,
         audit: JsonlAuditLogger | None = None,
         memory: SiteMemoryStore | None = None,
+        browser_engine: AgentBrowserTool | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
         self.tools = tools
         self.audit = audit
         self.memory = memory
+        self._browser_engine = browser_engine
 
     @classmethod
     def from_env(
@@ -184,7 +186,34 @@ class Orchestrator:
         )
         memory = SiteMemoryStore()
 
-        return cls(config=cfg, llm=llm, tools=tools, audit=audit, memory=memory)
+        return cls(
+            config=cfg,
+            llm=llm,
+            tools=tools,
+            audit=audit,
+            memory=memory,
+            browser_engine=browser_engine,
+        )
+
+    def prewarm_browser(self) -> bool:
+        """Surface the daemon prewarm state for REPL startup.
+
+        ``AgentBrowserTool.__init__`` already kicks off a background warmup
+        thread (5-min Windows cold-start), so by the time ``from_env`` returns
+        the daemon is already on its way up. This method just *reports*
+        whether that warmup is in flight so the CLI can print a status line
+        before the welcome banner instead of leaving the user wondering why
+        the first task is slow.
+
+        Returns ``True`` if a warmup is currently running, ``False`` otherwise.
+        """
+        engine = self._browser_engine
+        if engine is None:
+            return False
+        try:
+            return bool(engine.is_warming_up())
+        except Exception:
+            return False
 
     async def run_task(self, task: str) -> dict[str, Any]:
         """Execute one user task end-to-end. Returns session id, messages, and final text."""

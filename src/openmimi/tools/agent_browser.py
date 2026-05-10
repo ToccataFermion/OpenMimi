@@ -3460,6 +3460,16 @@ class AgentBrowserTool(ToolBase):
         env["AGENT_BROWSER_ARGS"] = ",".join(self._browser_args)
         return env
 
+    def is_warming_up(self) -> bool:
+        """Return True while the eager-warmup background thread is running.
+
+        Safe to call from the CLI before the first user task: lets the REPL
+        surface the in-flight 5-minute Windows cold-start so the user knows
+        why the first tool call may take a while.
+        """
+        t = self._warmup_thread
+        return t is not None and t.is_alive()
+
     def _start_warmup(self) -> None:
         """Fire a background thread that starts the agent-browser daemon.
 
