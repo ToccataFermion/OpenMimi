@@ -793,11 +793,16 @@ class AgentBrowserTool(ToolBase):
     # ------------------------------------------------------------------ #
 
     async def _dispatch(self, action: str, inp: dict[str, Any]) -> ToolResult:
+        # Migrated handlers live in tools/actions/<family>.py and self-register
+        # at import time via the @register decorator. Consult that registry
+        # first so the giant in-class dispatch table can shrink piece by piece.
+        from . import actions as _actions
+
+        registered = _actions.get(action)
+        if registered is not None:
+            return await registered(self, inp)
+
         handlers: dict[str, Any] = {
-            "navigate": self._do_navigate,
-            "back": self._do_back,
-            "forward": self._do_forward,
-            "reload": self._do_reload,
             "snapshot": self._do_snapshot,
             "click": self._do_click,
             "right_click": self._do_right_click,
@@ -866,51 +871,6 @@ class AgentBrowserTool(ToolBase):
     # ------------------------------------------------------------------ #
     #  Action implementations
     # ------------------------------------------------------------------ #
-
-    async def _do_navigate(self, inp: dict[str, Any]) -> ToolResult:
-        url = inp.get("url", "about:blank")
-        if not self._started:
-            await self._start_browser(url)
-        else:
-            await self._exec("open", url, "--json")
-        # Refresh tab state after navigation
-        await self._refresh_tabs()
-        snapshot = await self._exec("snapshot", "--json")
-        text, _ = self._parse_snapshot(snapshot.stdout)
-
-        # Retry once if page is still empty (slow initial load or first startup)
-        if "(empty page)" in text:
-            await asyncio.sleep(3)
-            await self._refresh_tabs()
-            snapshot = await self._exec("snapshot", "--json")
-            text, _ = self._parse_snapshot(snapshot.stdout)
-
-        image = await self._take_screenshot()
-        details = {
-            "url": url,
-            "open_tabs": self._tabs,
-            "active_tab": self._active_tab_index,
-        }
-        return ToolResult(
-            output=f"Navigated to {url}\n{text[:2000]}",
-            base64_image=image,
-            details=details,
-        )
-
-    async def _do_back(self, _inp: dict[str, Any]) -> ToolResult:
-        result = await self._exec("back", "--json")
-        image = await self._take_screenshot()
-        return ToolResult(output=f"Navigated back\n{result.stdout[:1000]}", base64_image=image)
-
-    async def _do_forward(self, _inp: dict[str, Any]) -> ToolResult:
-        result = await self._exec("forward", "--json")
-        image = await self._take_screenshot()
-        return ToolResult(output=f"Navigated forward\n{result.stdout[:1000]}", base64_image=image)
-
-    async def _do_reload(self, _inp: dict[str, Any]) -> ToolResult:
-        result = await self._exec("reload", "--json")
-        image = await self._take_screenshot()
-        return ToolResult(output=f"Page reloaded\n{result.stdout[:1000]}", base64_image=image)
 
     async def _do_select(self, inp: dict[str, Any]) -> ToolResult:
         ref = inp.get("ref")

@@ -5,7 +5,7 @@
 
 ## 当前焦点
 
-**Wave 2 #4-lite**:`agent_browser.py` dispatcher 化 — 拆 `actions/` 子目录,主类只做路由 + daemon 管理。
+**Wave 2 #4-lite (进行中)**:`agent_browser.py` dispatcher 化。第 1 步已完成 — `actions/` 包脚手架 + 4 个导航 action(navigate/back/forward/reload)外迁。下一步:迁 interaction 族(click/type/fill/press/...)。
 
 ## Wave 1 — 清债 + 基础(本周)
 
@@ -17,6 +17,15 @@
 ## Wave 2 — 工程解耦(下周)
 
 - [ ] #4-lite `agent_browser.py` dispatcher 化(拆 `actions/` 子目录,主类只做路由 + daemon 管理)
+  - [x] step 1 — `actions/` 包 + registry + `navigation.py`(navigate/back/forward/reload)
+  - [ ] step 2 — interaction 族(click/right_click/double_click/check/uncheck/type/fill/react_fill/press/key_combo/hover)
+  - [ ] step 3 — scroll 族(scroll/human_scroll/scroll_until/scroll_into_view)
+  - [ ] step 4 — extract / page-state 族(snapshot/extract/page_source/get_url/get_title/get_attribute/set_attribute/get_property/get_box/is_visible/visual_locate)
+  - [ ] step 5 — wait 族(wait/wait_for/wait_for_disappear/wait_for_navigation/wait_for_network_idle)
+  - [ ] step 6 — tab/session 族(tab_*/save_session/load_session/clipboard/clear_cache)
+  - [ ] step 7 — network/cdp/storage/pdf/console/screenshot 族
+  - [ ] step 8 — 剩余杂项(eval/batch/drag/mouse/focus/select/upload/download/emulate_device/set_*)
+  - [ ] step 9 — 主类只剩 `__init__` / `__call__` / `_dispatch` / daemon 管理(`_start_browser` / `_exec` / etc.)
 - [ ] #12 结构化 ToolResult(新增可选 `structured: dict` 字段)
 
 ## Wave 3 — 智能跃迁(2-3 周)
@@ -51,6 +60,7 @@
 - 2026-05-11 · **Wave 1 #2** — 删除 `src/openmimi/skills.py`(指向已删除目录的死代码);**顺手修复**:`Orchestrator._build_system_prompt` 之前完全没注入 site memory(写但不读),现在通过 `memory.format_for_prompt(domain)` 真正接到 system prompt 上。`pytest`: 仍 62 passed / 2 同样的 pre-existing failures。
 - 2026-05-11 · **Wave 1 #3** — `tools/errors.py` 从 5 个 ErrorCode 扩到 20 个,覆盖 element / network / auth / page-state / execution / system 六类;每个 code 配一条 `next_step_hint` 结构化恢复提示;新增 `make_error_result(code, message, ...)` helper,把提示同时写进 `output`(LLM 可见)和 `details`(审计);新增 `tests/unit/test_errors.py`(7 例,覆盖 hint 完整性 / StrEnum 兼容 / extra_details 合并)。`pytest`: 69 passed / 2 同样的 pre-existing failures。**注**:Wave 1 #4 之前不大改 `agent_browser.py`,所以暂未把现有错误路径迁到新 helper(留待 dispatcher 化时一起做)。
 - 2026-05-11 · **Wave 1 #6** — Daemon prewarm 显式化。背景:`AgentBrowserTool.__init__` 已经在后台线程跑 `_start_warmup`,但用户感知不到首条任务为什么慢。本次改动:① `AgentBrowserTool.is_warming_up()` 公开接口;② `Orchestrator` 持有 `browser_engine` 引用,新增 `prewarm_browser() -> bool`(失败安全);③ `cli.chat()` 与 `cli.chat_main()` 在 welcome 之后调用 `_announce_prewarm(orch)`,有 warmup 在飞时打一行 `browser : warming up in background (first task may be slow)`。新增 `tests/unit/test_prewarm.py`(7 例,覆盖无 engine / 飞 / 完成 / 异常 / 三种 announce 路径)。`pytest`: 76 passed / 2 同样的 pre-existing failures。**注**:没有真正"挪"启动时间(它本来就在后台跑),而是把它**可见化** — 这是用最小改动达成 roadmap 意图的方式,等 Wave 1 #4 dispatcher 化之后如果还需要可以再做 sync await。
+- 2026-05-11 · **Wave 2 #4-lite step 1** — `agent_browser.py`(3766 行)dispatcher 化第 1 步:① 新建 `tools/actions/` 包 + 注册表(`@register(name)` 装饰器、`get(name)`、`registered_actions()`);② 新建 `actions/navigation.py`,把 `navigate/back/forward/reload` 4 个 handler 从 `_do_*` bound method 迁出为接受 `engine` 参数的自由函数;③ `_dispatch` 在查询内置 dict 之前先咨询 registry,registry 命中即返回;④ 删除 `agent_browser.py` 里这 4 个 method 与对应的 dispatch 项(-40 行)。增量、向后兼容(主类外观完全不变)、不需要再回炉 — 后续 step 复用同一脚手架。新增 `tests/unit/test_actions_registry.py`(6 例,覆盖注册表查询 / 4 个 handler 与 fake engine 的协作)。`pytest`: 82 passed / 2 同样的 pre-existing failures。`agent_browser.py` 现 3726 行,目标是 < 1000 行。
 
 ## Blockers
 
