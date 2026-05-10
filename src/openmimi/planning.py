@@ -1,9 +1,9 @@
 """Plan / Verifier scaffolding for the Planner-Executor-Verifier triangle.
 
-Stage 1 of roadmap item #7. Defines the data structures and the Verifier
-Protocol; provides a `NullVerifier` no-op so callers can wire the surface
-without committing to LLM-driven verification yet. Nothing here calls an
-LLM — Stage 2 will add `LLMVerifier`, Stage 3 will add a Planner.
+Roadmap item #7. Stage 1 shipped the data structures and the Verifier
+Protocol + `NullVerifier` (always "continue") as a safe default.
+Stage 2 wired both into `sampling_loop`. Stage 3 adds an LLM-backed
+verifier (`LLMVerifier`); a Planner will follow.
 
 Glossary:
     PlanStep      — one chunk of the user task, with success criteria.
@@ -11,11 +11,16 @@ Glossary:
     Verifier      — Protocol; `verify(plan, recent_messages)` returns one
                     of "done" / "continue" / "replan".
     NullVerifier  — always returns "continue"; default when planning is off.
+    LLMVerifier   — asks an LLM to grade progress against `success_criteria`.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
+
+from .llm.base import LLMClient
 
 
 VerifyOutcome = Literal["done", "continue", "replan"]
@@ -133,10 +138,175 @@ class NullVerifier:
         return "continue"
 
 
+_LLM_VERIFIER_SYSTEM = (
+    "You are a plan-progress verifier for an autonomous agent. "
+    "Read the current plan step's success criteria and a tail of the "
+    "agent's recent activity, then decide one of: "
+    '"done" (criteria met), "continue" (still in progress), '
+    '"replan" (stuck or going wrong way). '
+    "Output STRICT JSON only with shape "
+    '{"outcome": "done|continue|replan", "reason": "<one sentence>"} — '
+    "no prose, no markdown, no fences."
+)
+
+
+_OUTCOMES: tuple[VerifyOutcome, ...] = ("done", "continue", "replan")
+
+
+def _extract_response_text(response: dict[str, Any]) -> str:
+    """Pull text content out of an LLMClient.create() response."""
+    content = response.get("content") or []
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _parse_outcome(text: str) -> VerifyOutcome | None:
+    """Extract a VerifyOutcome from a possibly-noisy LLM reply.
+
+    Tries direct JSON first, then a regex sniff for the first {...} blob.
+    Returns None if no valid outcome string was found.
+    """
+    if not text:
+        return None
+    candidates = [text.strip()]
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            outcome = data.get("outcome")
+            if isinstance(outcome, str) and outcome in _OUTCOMES:
+                return outcome  # type: ignore[return-value]
+    return None
+
+
+def _summarize_messages(
+    messages: list[dict[str, Any]], max_chars_per_block: int = 400
+) -> str:
+    """Condense recent agent turns into a compact, prompt-friendly summary.
+
+    Walks each message's content blocks; keeps text and surfaces tool_use /
+    tool_result types as one-line markers. Truncates each text block to
+    `max_chars_per_block` to keep the verifier prompt small.
+    """
+    lines: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "?")
+        content = msg.get("content")
+        if isinstance(content, str):
+            snippet = content[:max_chars_per_block]
+            lines.append(f"[{role}] {snippet}")
+            continue
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                txt = block.get("text", "")
+                lines.append(f"[{role}/text] {txt[:max_chars_per_block]}")
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                try:
+                    inp_s = json.dumps(inp, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    inp_s = str(inp)
+                lines.append(
+                    f"[{role}/tool_use] {name}({inp_s[:max_chars_per_block]})"
+                )
+            elif btype == "tool_result":
+                err = " ERROR" if block.get("is_error") else ""
+                sub = block.get("content")
+                texts: list[str] = []
+                if isinstance(sub, list):
+                    for s in sub:
+                        if isinstance(s, dict) and s.get("type") == "text":
+                            texts.append(str(s.get("text", "")))
+                summary = " | ".join(texts) if texts else ""
+                lines.append(
+                    f"[{role}/tool_result{err}] {summary[:max_chars_per_block]}"
+                )
+            elif btype == "image":
+                lines.append(f"[{role}/image]")
+    return "\n".join(lines)
+
+
+class LLMVerifier:
+    """Verifier that asks an LLM to grade the current PlanStep.
+
+    Uses the supplied `LLMClient` (caller picks the model — typically a
+    cheaper one like Haiku) with a strict-JSON system prompt. Any failure
+    along the path — empty `plan.current()` notwithstanding — falls back
+    to "continue" so a flaky verifier never aborts a session. Empty
+    `plan.current()` returns "done" because there's nothing left to check.
+    """
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        *,
+        max_tail_messages: int = 6,
+        max_tokens: int = 200,
+        system_prompt: str | None = None,
+    ) -> None:
+        self.llm = llm
+        self.max_tail_messages = max_tail_messages
+        self.max_tokens = max_tokens
+        self.system_prompt = system_prompt or _LLM_VERIFIER_SYSTEM
+
+    async def verify(
+        self,
+        plan: Plan,
+        recent_messages: list[dict[str, Any]],
+    ) -> VerifyOutcome:
+        current = plan.current()
+        if current is None:
+            return "done"
+        tail = (
+            recent_messages[-self.max_tail_messages:]
+            if recent_messages
+            else []
+        )
+        user_prompt = (
+            f"Current step: {current.step}\n"
+            f"Success criteria: {current.success_criteria}\n\n"
+            f"Recent agent activity (oldest first):\n"
+            f"{_summarize_messages(tail) or '(no activity)'}\n\n"
+            'Reply with ONLY: {"outcome": "done|continue|replan", "reason": "..."}'
+        )
+        try:
+            response = await self.llm.create(
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=[],
+                max_tokens=self.max_tokens,
+            )
+        except Exception:
+            return "continue"
+        text = _extract_response_text(response)
+        outcome = _parse_outcome(text)
+        return outcome if outcome is not None else "continue"
+
+
 __all__ = [
+    "LLMVerifier",
+    "NullVerifier",
     "Plan",
     "PlanStep",
     "Verifier",
-    "NullVerifier",
     "VerifyOutcome",
 ]
