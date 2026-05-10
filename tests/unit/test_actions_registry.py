@@ -339,3 +339,160 @@ async def test_scroll_into_view_uses_eval() -> None:
     # First positional arg must be ``eval`` and the JS payload must mention scrollIntoView.
     assert captured[0][0] == "eval"
     assert "scrollIntoView" in captured[0][1]
+
+
+def test_registry_has_extract_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "snapshot",
+        "page_source",
+        "get_url",
+        "get_title",
+        "get_attribute",
+        "set_attribute",
+        "get_property",
+        "extract",
+        "get_box",
+        "is_visible",
+        "visual_locate",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_get_url_returns_window_location() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":"https://example.com/page"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": "https://example.com/page"}
+
+    result = await actions.get("get_url")(_Engine(), {})
+    assert result.is_error is False
+    assert result.output == "https://example.com/page"
+    # Must call eval with window.location.href expression.
+    assert captured[0][0] == "eval"
+    assert "window.location.href" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_get_title_returns_document_title() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"result":"Hello"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": "Hello"}
+
+    result = await actions.get("get_title")(_Engine(), {})
+    assert result.is_error is False
+    assert result.output == "Hello"
+    assert captured[0][0] == "eval"
+    assert "document.title" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_get_box_calls_get_box_subcommand() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout='{"box":{"x":1,"y":2,"width":10,"height":20}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"box": {"x": 1, "y": 2, "width": 10, "height": 20}}
+
+    result = await actions.get("get_box")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "x" in result.output  # JSON dump includes the key
+    assert captured == [("get", "box", "@e1", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_get_box_requires_selector() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("get_box")(_Engine(), {})
+    assert result.is_error is True
+    assert "get_box requires" in result.output
+
+
+@pytest.mark.asyncio
+async def test_extract_get_text_truncates_to_4000() -> None:
+    """The default 'get text' instruction returns innerText capped at 4000 chars."""
+    from openmimi.tools import actions
+
+    big_text = "a" * 5000
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout='{"result":"' + big_text + '"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": big_text}
+
+    result = await actions.get("extract")(_Engine(), {"instruction": "get text"})
+    assert result.is_error is False
+    assert len(result.output) == 4000
+
+
+@pytest.mark.asyncio
+async def test_get_attribute_requires_attribute_name() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("get_attribute")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is True
+    assert "attribute_name" in result.output
+
+
+@pytest.mark.asyncio
+async def test_is_visible_dispatches_eval_with_ref_selector() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(
+                stdout='{"result":{"visible":true,"tag":"BUTTON","rect":{"x":1,"y":2,"width":3,"height":4}}}'
+            )
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {
+                "result": {
+                    "visible": True,
+                    "tag": "BUTTON",
+                    "rect": {"x": 1, "y": 2, "width": 3, "height": 4},
+                }
+            }
+
+    result = await actions.get("is_visible")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "Visible: True" in result.output
+    assert captured[0][0] == "eval"
+    # The JS payload should mention getBoundingClientRect since it does that probe.
+    assert "getBoundingClientRect" in captured[0][1]
+

@@ -79,3 +79,4 @@ __all__ = [
 from . import navigation  # noqa: E402,F401  (side-effect: registration)
 from . import interaction  # noqa: E402,F401  (side-effect: registration)
 from . import scroll  # noqa: E402,F401  (side-effect: registration)
+from . import extract  # noqa: E402,F401  (side-effect: registration)
