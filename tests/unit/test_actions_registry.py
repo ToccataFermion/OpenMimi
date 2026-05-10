@@ -496,3 +496,139 @@ async def test_is_visible_dispatches_eval_with_ref_selector() -> None:
     # The JS payload should mention getBoundingClientRect since it does that probe.
     assert "getBoundingClientRect" in captured[0][1]
 
+
+def test_registry_has_wait_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    for name in (
+        "wait",
+        "wait_for",
+        "wait_for_disappear",
+        "wait_for_navigation",
+        "wait_for_network_idle",
+    ):
+        assert name in registered, f"missing migrated action: {name}"
+
+
+@pytest.mark.asyncio
+async def test_wait_handler_calls_wait_subcommand() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+    result = await actions.get("wait")(_Engine(), {"milliseconds": 250})
+    assert result.is_error is False
+    assert "Waited 250ms" in result.output
+    assert captured == [("wait", "250", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_returns_immediately_when_box_present() -> None:
+    """wait_for must exit on the first probe if get box returns a box."""
+    from openmimi.tools import actions
+
+    exec_calls: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            exec_calls.append(args)
+            return SimpleNamespace(stdout='{"box":{"x":1,"y":2,"width":3,"height":4}}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"box": {"x": 1, "y": 2, "width": 3, "height": 4}}
+
+    result = await actions.get("wait_for")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "Element found: @e1" in result.output
+    assert exec_calls == [("get", "box", "@e1", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_requires_target() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("wait_for")(_Engine(), {})
+    assert result.is_error is True
+    assert "wait_for requires" in result.output
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disappear_returns_when_box_missing() -> None:
+    """wait_for_disappear must exit on the first probe if get box returns no box."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout='{}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {}
+
+    result = await actions.get("wait_for_disappear")(_Engine(), {"ref": "@e1"})
+    assert result.is_error is False
+    assert "disappeared" in result.output
+
+
+@pytest.mark.asyncio
+async def test_wait_for_navigation_detects_url_change() -> None:
+    """wait_for_navigation must return as soon as the URL transitions."""
+    from openmimi.tools import actions
+
+    urls = ["https://a.example/", "https://a.example/", "https://b.example/"]
+    parsed_results = ["https://a.example/", "https://a.example/", "https://b.example/"]
+    counter = {"i": 0}
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            i = counter["i"]
+            counter["i"] = i + 1
+            return SimpleNamespace(stdout=urls[min(i, len(urls) - 1)])
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            i = min(counter["i"] - 1, len(parsed_results) - 1)
+            return {"result": parsed_results[i]}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("wait_for_navigation")(
+        _Engine(), {"timeout_ms": 5000, "interval_ms": 1}
+    )
+    assert result.is_error is False
+    assert "Navigation detected" in result.output
+    assert "https://a.example/" in result.output
+    assert "https://b.example/" in result.output
+
+
+@pytest.mark.asyncio
+async def test_wait_for_network_idle_installs_hook_and_returns_when_idle() -> None:
+    """First eval is the install JS; subsequent polls return idle=True immediately."""
+    from openmimi.tools import actions
+
+    captured: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout="ok")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"idle": True, "idleFor": 2500, "count": 0}}
+
+    result = await actions.get("wait_for_network_idle")(
+        _Engine(), {"idle_duration_ms": 100, "timeout_ms": 5000, "interval_ms": 1}
+    )
+    assert result.is_error is False
+    assert "Network idle" in result.output
+    # First call should install the hook (mentions __openmimi_network_idle_hooked).
+    assert "__openmimi_network_idle_hooked" in captured[0]
+

@@ -772,15 +772,12 @@ class AgentBrowserTool(ToolBase):
             "tab_switch": self._do_tab_switch,
             "tab_new": self._do_tab_new,
             "tab_close": self._do_tab_close,
-            "wait": self._do_wait,
             "eval": self._do_eval,
             "batch": self._do_batch,
             "drag": self._do_drag,
             "mouse": self._do_mouse,
             "focus": self._do_focus,
             "clipboard": self._do_clipboard,
-            "wait_for": self._do_wait_for,
-            "wait_for_disappear": self._do_wait_for_disappear,
             "network_log": self._do_network_log,
             "network_modify": self._do_network_modify,
             "storage": self._do_storage,
@@ -790,8 +787,6 @@ class AgentBrowserTool(ToolBase):
             "set_viewport": self._do_set_viewport,
             "save_session": self._do_save_session,
             "load_session": self._do_load_session,
-            "wait_for_navigation": self._do_wait_for_navigation,
-            "wait_for_network_idle": self._do_wait_for_network_idle,
             "emulate_device": self._do_emulate_device,
             "set_timezone": self._do_set_timezone,
             "set_locale": self._do_set_locale,
@@ -846,126 +841,6 @@ class AgentBrowserTool(ToolBase):
         result = await self._exec("download", selector, save_path, "--json")
         image = await self._take_screenshot()
         return ToolResult(output=f"Downloaded to {save_path} from {selector}\n{result.stdout[:1000]}", base64_image=image)
-
-    async def _do_wait_for_navigation(self, inp: dict[str, Any]) -> ToolResult:
-        """Wait for the page URL to change, indicating navigation has occurred."""
-        expected_url = inp.get("expected_url", "")
-        timeout_ms = inp.get("timeout_ms", 10000)
-        interval_ms = inp.get("interval_ms", 500)
-        try:
-            result = await self._exec("eval", "(() => window.location.href)()", "--json")
-            data = self._parse_data(result.stdout)
-            start_url = data.get("result") if isinstance(data, dict) else ""
-        except Exception:
-            start_url = ""
-        start = time.monotonic()
-        while (time.monotonic() - start) * 1000 < timeout_ms:
-            try:
-                result = await self._exec("eval", "(() => window.location.href)()", "--json")
-                data = self._parse_data(result.stdout)
-                current_url = data.get("result") if isinstance(data, dict) else ""
-                if current_url != start_url:
-                    if not expected_url or expected_url in current_url:
-                        image = await self._take_screenshot()
-                        return ToolResult(
-                            output=f"Navigation detected: {start_url} -> {current_url}",
-                            base64_image=image,
-                            details={"previous_url": start_url, "current_url": current_url},
-                        )
-            except Exception:
-                pass
-            await asyncio.sleep(interval_ms / 1000.0)
-        return ToolResult(
-            output=f"wait_for_navigation timed out after {timeout_ms}ms (URL did not change from {start_url})",
-            is_error=True,
-        )
-
-    async def _do_wait_for_network_idle(self, inp: dict[str, Any]) -> ToolResult:
-        """Wait until no network requests have been active for a specified duration.
-
-        This is useful for SPAs that load data asynchronously after navigation
-        or clicks. It tracks in-flight fetch/XHR requests and returns only when
-        the count drops to zero and stays there for `idle_duration_ms`.
-        """
-        idle_duration_ms = inp.get("idle_duration_ms", 2000)
-        timeout_ms = inp.get("timeout_ms", 30000)
-        interval_ms = inp.get("interval_ms", 500)
-
-        # Install enhanced interceptor that tracks in-flight request count
-        setup_js = """
-        (() => {
-            if (window.__openmimi_network_idle_hooked) return {ok: true, already: true};
-            window.__openmimi_network_idle_count = 0;
-            window.__openmimi_network_last_active = Date.now();
-
-            const origFetch = window.fetch;
-            window.fetch = function(...args) {
-                window.__openmimi_network_idle_count++;
-                window.__openmimi_network_last_active = Date.now();
-                return origFetch.apply(this, args).finally(() => {
-                    window.__openmimi_network_idle_count--;
-                    window.__openmimi_network_last_active = Date.now();
-                });
-            };
-
-            const origXHRSend = window.XMLHttpRequest.prototype.send;
-            window.XMLHttpRequest.prototype.send = function(body) {
-                window.__openmimi_network_idle_count++;
-                window.__openmimi_network_last_active = Date.now();
-                const self = this;
-                const onDone = () => {
-                    window.__openmimi_network_idle_count--;
-                    window.__openmimi_network_last_active = Date.now();
-                    self.removeEventListener('loadend', onDone);
-                };
-                this.addEventListener('loadend', onDone);
-                return origXHRSend.call(this, body);
-            };
-
-            window.__openmimi_network_idle_hooked = true;
-            return {ok: true, already: false};
-        })()
-        """
-        try:
-            await self._exec("eval", setup_js, "--json")
-        except Exception:
-            pass
-
-        start = time.monotonic()
-        while (time.monotonic() - start) * 1000 < timeout_ms:
-            try:
-                poll_js = f"""
-                (() => {{
-                    const count = window.__openmimi_network_idle_count || 0;
-                    const lastActive = window.__openmimi_network_last_active || 0;
-                    const now = Date.now();
-                    const idleFor = now - lastActive;
-                    return {{
-                        count,
-                        idleFor,
-                        idle: count === 0 && idleFor >= {int(idle_duration_ms)}
-                    }};
-                }})()
-                """
-                result = await self._exec("eval", poll_js, "--json")
-                data = self._parse_data(result.stdout)
-                result_value = data.get("result") if isinstance(data, dict) else None
-                if isinstance(result_value, dict) and result_value.get("idle"):
-                    return ToolResult(
-                        output=f"Network idle for {result_value.get('idleFor', 0)}ms (no active requests)",
-                        details={
-                            "idle_duration_ms": result_value.get("idleFor", 0),
-                            "in_flight": result_value.get("count", 0),
-                        },
-                    )
-            except Exception:
-                pass
-            await asyncio.sleep(interval_ms / 1000.0)
-
-        return ToolResult(
-            output=f"wait_for_network_idle timed out after {timeout_ms}ms",
-            is_error=True,
-        )
 
     async def _do_emulate_device(self, inp: dict[str, Any]) -> ToolResult:
         """Emulate a mobile device via CDP or JS fallback."""
@@ -1245,11 +1120,6 @@ class AgentBrowserTool(ToolBase):
             return ToolResult(output=f"Closed tab {idx}")
         return ToolResult(output="tab_close requires valid tab_index")
 
-    async def _do_wait(self, inp: dict[str, Any]) -> ToolResult:
-        ms = inp.get("milliseconds", 1000)
-        await self._exec("wait", str(ms), "--json")
-        return ToolResult(output=f"Waited {ms}ms")
-
     async def _do_eval(self, inp: dict[str, Any]) -> ToolResult:
         js = inp.get("js", "")
         if not js.strip():
@@ -1415,95 +1285,6 @@ class AgentBrowserTool(ToolBase):
                 is_error=True,
             )
         return ToolResult(output=f"Browser window focused: {wt}")
-
-    async def _do_wait_for(self, inp: dict[str, Any]) -> ToolResult:
-        """Wait for an element or text to appear on the page."""
-        ref = inp.get("ref")
-        target_text = inp.get("target_text")
-        text = inp.get("text", "")
-        timeout_ms = inp.get("timeout_ms", 10000)
-        interval_ms = inp.get("interval_ms", 500)
-        selector = ref or target_text
-
-        if not selector and not text:
-            return ToolResult(
-                output="wait_for requires 'ref', 'target_text', or 'text'", is_error=True
-            )
-
-        start = time.monotonic()
-        while (time.monotonic() - start) * 1000 < timeout_ms:
-            try:
-                if selector:
-                    result = await self._exec("get", "box", selector, "--json")
-                    data = self._parse_data(result.stdout)
-                    box = data.get("box") if isinstance(data, dict) else None
-                    if box:
-                        return ToolResult(
-                            output=f"Element found: {selector}",
-                            details={"box": box, "selector": selector},
-                        )
-                if text:
-                    snapshot = await self._exec("snapshot", "--json")
-                    snap_text, _ = self._parse_snapshot(snapshot.stdout)
-                    if text in snap_text:
-                        return ToolResult(
-                            output=f"Text found: {text}",
-                        )
-            except Exception:
-                pass
-            await asyncio.sleep(interval_ms / 1000.0)
-
-        return ToolResult(
-            output=f"wait_for timed out after {timeout_ms}ms: {selector or text}",
-            is_error=True,
-        )
-
-    async def _do_wait_for_disappear(self, inp: dict[str, Any]) -> ToolResult:
-        """Wait for an element or text to disappear from the page."""
-        ref = inp.get("ref")
-        target_text = inp.get("target_text")
-        text = inp.get("text", "")
-        timeout_ms = inp.get("timeout_ms", 10000)
-        interval_ms = inp.get("interval_ms", 500)
-        selector = ref or target_text
-
-        if not selector and not text:
-            return ToolResult(
-                output="wait_for_disappear requires 'ref', 'target_text', or 'text'", is_error=True
-            )
-
-        start = time.monotonic()
-        while (time.monotonic() - start) * 1000 < timeout_ms:
-            try:
-                found = False
-                if selector:
-                    result = await self._exec("get", "box", selector, "--json")
-                    data = self._parse_data(result.stdout)
-                    box = data.get("box") if isinstance(data, dict) else None
-                    if box:
-                        found = True
-                if text:
-                    snapshot = await self._exec("snapshot", "--json")
-                    snap_text, _ = self._parse_snapshot(snapshot.stdout)
-                    if text in snap_text:
-                        found = True
-                if not found:
-                    return ToolResult(
-                        output=f"Element/text disappeared: {selector or text}",
-                        details={"selector": selector, "text": text},
-                    )
-            except Exception:
-                # If get/snapshot fails, assume the element is gone
-                return ToolResult(
-                    output=f"Element/text disappeared (page error): {selector or text}",
-                    details={"selector": selector, "text": text},
-                )
-            await asyncio.sleep(interval_ms / 1000.0)
-
-        return ToolResult(
-            output=f"wait_for_disappear timed out after {timeout_ms}ms: {selector or text} is still present",
-            is_error=True,
-        )
 
     async def _do_network_log(self, inp: dict[str, Any]) -> ToolResult:
         """Inject JS to intercept network requests and responses, then return captured traffic."""
