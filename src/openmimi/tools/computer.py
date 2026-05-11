@@ -19,6 +19,7 @@ import ctypes.wintypes
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 from typing import Any
@@ -1600,9 +1601,12 @@ class ComputerTool(ToolBase):
             except Exception:
                 pass
         has_error = any("ERROR" in line or "EXCEPTION" in line or "invalid" in line or "missing" in line for line in outputs)
+        # bail=false means "don't stop on error", NOT "treat errors as success" —
+        # callers (and audit-stats) still need to know if any sub-step failed,
+        # otherwise the only place the failure surfaces is in the summary string.
         return ToolResult(
             output=summary,
-            is_error=has_error if bail else False,
+            is_error=has_error,
             base64_image=image,
         )
 
