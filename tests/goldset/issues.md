@@ -1,0 +1,45 @@
+# Goldset issue log
+
+Reverse-chronological. Each entry is one issue surfaced by an autonomous
+goldset cycle: what broke, why, and how it was fixed (or why no fix was
+applied). Lets you scan all regressions caught by the rotation without
+diffing every commit.
+
+Format per entry:
+
+```
+## YYYY-MM-DD cycle <n> — task `<task_id>`
+**Symptom:** one-line description of what the agent did or what failed.
+**Audit:** data/audit/<session_id>.jsonl
+**Root cause:** what was actually wrong.
+**Fix:** commit <hash> — files / approach. Or "no code fix — LLM reasoning miss" / "no fix — flake, see notes".
+**Tests:** added test path / "covered by existing".
+```
+
+Keep entries terse. If a cycle finds nothing actionable, do NOT add a noise
+entry — only log when there's a real bug, a deliberate decision not to fix,
+or a recurring flake worth tracking.
+
+---
+
+## 2026-05-11 cycle 0 — task `nav_wikipedia`
+**Symptom:** `mimi run "<task>"` printed the chat welcome banner, hit stdin
+EOF, exited 0, and produced no audit log. Cron captured the welcome screen
+in `data/goldset_runs/cycle_000_nav_wikipedia.log`; no
+`data/audit/49e567f0e2ad4fc2be46b3a81eb25909.jsonl` was ever written.
+**Audit:** N/A — no audit was produced (that *was* the bug).
+**Root cause:** `pyproject.toml` binds `mimi` to `openmimi.cli:chat_main`,
+which dropped straight into the chat REPL ignoring `sys.argv`. So
+`mimi run "..."`, `mimi audit-stats`, `mimi replay <sid>` all silently
+fell through to the REPL.
+**Fix:** see commit on `main` — `chat_main` now sniffs `sys.argv[1]` and
+hands off to `app()` whenever it matches a registered typer subcommand
+(derived from `app.registered_commands`) or is `--help` / `-h`. Bare
+`mimi` with no args still enters the REPL.
+**Tests:** `tests/unit/test_cli.py::test_chat_main_routes_subcommands_to_typer_app`,
+`test_chat_main_routes_help_flag_to_typer_app`,
+`test_chat_main_bare_invocation_skips_typer_app`.
+**Re-run:** task ran cleanly post-fix as session
+`0874be7dd8e6438b941e9b5bdc465d25`; both tool calls (`browser_navigate`,
+`browser_extract`) succeeded and the agent returned the Wikipedia opener
+paragraph.

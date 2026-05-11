@@ -288,6 +288,112 @@ def replay(session_id: str) -> None:
             typer.echo(f"           image: {rec['image_path']}")
 
 
+def _render_stats_table(stats: list[Any]) -> str:
+    """Format aggregated tool stats as a fixed-width table.
+
+    Kept in cli.py rather than the audit package so the rendering choices
+    (column widths, summary truncation) stay with the CLI presentation layer.
+    """
+    if not stats:
+        return "  (no matching records)"
+    header = (
+        f"  {'tool':<18} {'action':<22} {'calls':>5} {'err':>4} "
+        f"{'rate':>6} {'avg_ms':>7}  top_code / last_error"
+    )
+    lines = [header, "  " + "-" * (len(header) - 2)]
+    for s in stats:
+        top_code = ""
+        if s.error_codes:
+            top_code = max(s.error_codes.items(), key=lambda kv: kv[1])[0]
+        snippet = s.last_error_summary
+        if len(snippet) > 60:
+            snippet = snippet[:57] + "..."
+        rate_pct = f"{s.error_rate * 100:.0f}%"
+        avg = f"{s.avg_ms:.0f}"
+        tail = top_code
+        if snippet:
+            tail = f"{top_code:<22} {snippet}" if top_code else snippet
+        lines.append(
+            f"  {s.tool[:18]:<18} {s.action[:22]:<22} "
+            f"{s.calls:>5} {s.errors:>4} {rate_pct:>6} {avg:>7}  {tail}"
+        )
+    return "\n".join(lines)
+
+
+@app.command("audit-stats")
+def audit_stats(
+    since_days: float = typer.Option(
+        7.0,
+        "--since",
+        help="Only include audit records from the last N days (set 0 for all-time).",
+    ),
+    min_calls: int = typer.Option(
+        3,
+        "--min-calls",
+        help="Hide buckets with fewer than N calls — keeps the table focused on real signal.",
+    ),
+    tool_filter: str = typer.Option(
+        "",
+        "--tool",
+        help="Substring match against the tool name (case-insensitive). Empty = all tools.",
+    ),
+    sort_by: str = typer.Option(
+        "error_rate",
+        "--sort",
+        help="Sort key: error_rate (default), errors, calls, avg_ms.",
+    ),
+    watch_secs: float = typer.Option(
+        0.0,
+        "--watch",
+        help="Re-render every N seconds (Ctrl+C to stop). 0 = print once and exit.",
+    ),
+) -> None:
+    """Report per-(tool, action) success/failure rates over recent sessions.
+
+    The default view is the last 7 days, hides single-call buckets, and sorts
+    worst-failing first. Use ``--watch 5`` to leave it running while you iterate
+    on tool fixes.
+    """
+    from .audit.stats import aggregate, filter_and_sort, since_from_days
+
+    cfg = load_config()
+    audit_dir = Path(cfg.storage.audit_dir)
+
+    def _render_once() -> str:
+        since = since_from_days(since_days) if since_days > 0 else None
+        raw = aggregate(
+            audit_dir,
+            since=since,
+            tool_filter=tool_filter or None,
+        )
+        stats = filter_and_sort(raw, min_calls=min_calls, sort_by=sort_by)
+        window = f"last {since_days:g}d" if since_days > 0 else "all time"
+        header_line = (
+            f"audit_dir: {audit_dir}    window: {window}    "
+            f"min_calls: {min_calls}    sort: {sort_by}"
+        )
+        if tool_filter:
+            header_line += f"    tool~{tool_filter!r}"
+        return header_line + "\n\n" + _render_stats_table(stats)
+
+    if watch_secs <= 0:
+        typer.echo(_render_once())
+        return
+
+    import time
+
+    try:
+        while True:
+            # Clear screen on supported terminals so the table refreshes in-place.
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
+            typer.echo(_render_once())
+            typer.echo(f"\n(refresh every {watch_secs:g}s — Ctrl+C to stop)")
+            time.sleep(watch_secs)
+    except KeyboardInterrupt:
+        typer.echo("\nstopped", err=True)
+
+
 def _maybe_load_dotenv() -> None:
     """Best-effort load of .env from user config dir, then current directory.
 
@@ -307,8 +413,36 @@ def _maybe_load_dotenv() -> None:
         pass
 
 
+def _known_subcommands() -> set[str]:
+    """Names of all typer subcommands registered on ``app``.
+
+    Derived at call time so adding a new ``@app.command`` automatically makes
+    ``mimi <new-cmd>`` route to the typer app — no second registry to keep in
+    sync.
+    """
+    names: set[str] = set()
+    for c in app.registered_commands:
+        n = c.name or (c.callback.__name__ if c.callback else None)
+        if n:
+            names.add(n)
+    return names
+
+
 def chat_main() -> None:
-    """Short-cut entry point: `mimi` starts chat REPL directly."""
+    """Short-cut entry point.
+
+    Bare ``mimi`` drops into the chat REPL (the original intent of this
+    shortcut). ``mimi <subcommand> ...`` instead dispatches to the same typer
+    app that ``openmimi`` uses, so ``mimi run "..."``, ``mimi audit-stats``,
+    etc. work without the user having to remember the longer binary name. The
+    routing is opt-in on a recognized subcommand so a bare prompt like
+    ``mimi`` is unchanged.
+    """
+    if len(sys.argv) > 1:
+        first = sys.argv[1]
+        if first in ("--help", "-h") or first in _known_subcommands():
+            app()
+            return
     _polish_console_io()
     _maybe_load_dotenv()
     from .orchestrator import Orchestrator

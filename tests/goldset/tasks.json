@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "nav_wikipedia",
+      "tags": ["browser", "navigation", "extraction"],
+      "prompt": "Open https://en.wikipedia.org/wiki/Python_(programming_language) and extract the first paragraph of the article body as plain text. Report just the paragraph."
+    },
+    {
+      "id": "search_duckduckgo",
+      "tags": ["browser", "form", "search"],
+      "prompt": "Go to https://duckduckgo.com, type 'OpenAI' into the search box, submit the search, and report the titles of the top 3 organic results."
+    },
+    {
+      "id": "scroll_hn",
+      "tags": ["browser", "scroll", "extraction"],
+      "prompt": "Open https://news.ycombinator.com, scroll down once, and report the top 5 story titles you can see along with their points (e.g. '123 points')."
+    },
+    {
+      "id": "tabs_example",
+      "tags": ["browser", "tabs"],
+      "prompt": "Open three tabs in this order: https://example.com, https://example.org, https://example.net. Then switch to the second tab and report its document title."
+    },
+    {
+      "id": "screenshot_desktop",
+      "tags": ["computer", "screenshot"],
+      "prompt": "Use the computer tool to take a screenshot of the desktop. Describe in 1-2 sentences what windows or applications are visible."
+    },
+    {
+      "id": "focus_then_screenshot",
+      "tags": ["computer", "window", "screenshot"],
+      "prompt": "Use the computer tool: find any visible window whose title contains 'chrome' (case insensitive). Focus it, then take a screenshot of just the screen area covered by that window. Report the window title you focused on."
+    },
+    {
+      "id": "xft_after_login",
+      "tags": ["browser", "xft", "profile"],
+      "prompt": "Open https://xft.cmbchina.com — you should already be logged in via the persistent browser profile. Confirm that you reach a post-login page (not the login form) and report the page title plus one prominent UI element you see."
+    },
+    {
+      "id": "xft_fresh_login",
+      "tags": ["browser", "xft", "login", "captcha"],
+      "prompt": "Open https://xft.cmbchina.com. First, clear all cookies for that domain via storage tools so cached login is invalidated. Then login fresh: username 18584828398, password Liszt123. If a slider CAPTCHA appears, solve it via the OS-level computer tool (focus_window → screenshot → detect_color → mouse_drag). Report whether you reached the dashboard."
+    }
+  ]
+}
