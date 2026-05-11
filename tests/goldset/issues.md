@@ -22,7 +22,51 @@ or a recurring flake worth tracking.
 
 ---
 
-## 2026-05-12 cycle 7 — task `xft_fresh_login`
+## 2026-05-12 cycle 12 — task `screenshot_desktop`
+**Symptom:** Step 4 `computer batch [{action:shell,command:"setx OPENMIMI_ENABLE_SCREENSHOTS 1"},{action:screenshot}]`
+returned `Step 1 (shell): EXCEPTION - name 'subprocess' is not defined`.
+Worse, the batch as a whole reported `is_error=false` despite the shell
+sub-step crashing, so `mimi audit-stats` would see a clean row.
+**Audit:** data/audit/3603bd84e4604ff2b97ee47dd54b4b6f.jsonl
+**Root cause:** Two bugs in `src/openmimi/tools/computer.py`:
+1. `ComputerTool._do_shell` references `subprocess.run` / `subprocess.
+   TimeoutExpired` at lines 1758 + 1781, but `import subprocess` was
+   function-local inside `_do_launch` (line 1315) — never at module scope.
+   Calling the action from anywhere outside that function raised
+   `NameError: name 'subprocess' is not defined`.
+2. `_do_batch` set `is_error=has_error if bail else False`. Bail=false
+   means "keep going", not "treat errors as success" — callers and
+   `mimi audit-stats` still need the failure signal, otherwise the only
+   place it surfaces is in the human-readable summary string.
+**Fix:** commit 233529d — `import subprocess` moved to module scope
+(line 22 of computer.py); `_do_batch` now returns `is_error=has_error`
+unconditionally.
+**Tests:** `tests/unit/test_computer_shell_action.py::test_do_shell_runs_without_nameerror`
++ `test_do_batch_with_shell_substep_does_not_raise_subprocess_nameerror`
++ `test_do_batch_marks_is_error_when_substep_fails_even_with_bail_false`.
+The first two monkeypatch `subprocess.run` and assert the handler reaches
+it without NameError; the third stubs `_dispatch` to fail and asserts
+`is_error=True` even with `bail=false`.
+**Side observations (no code fix):**
+- Step 1 `computer screenshot` returned the screenshot-gate message
+  ("Screenshots disabled by default. Set OPENMIMI_ENABLE_SCREENSHOTS=1
+  or pass --screenshots to enable."). Working as designed — gate is a
+  privacy/token-cost guard from commit 11aef8d. The task as written is
+  unfulfillable unless the user opts in; agent adapted via `list_windows`
+  and produced a reasonable textual answer.
+- Step 2 `shell echo $OPENMIMI_ENABLE_SCREENSHOTS` ran on Windows cmd.exe
+  and printed the literal string `$OPENMIMI_ENABLE_SCREENSHOTS`. Same
+  Linux-syntax-on-Windows LLM-reasoning pattern documented in cycle 6.
+- The agent's choice of `setx ...` to enable screenshots wouldn't have
+  worked even if subprocess had imported: `setx` writes a permanent user
+  env var, it does NOT affect the current Python process's environment.
+  Pure LLM-reasoning miss.
+- Step 6 `tab_list` showed 10 tabs including stale xft/example/duckduckgo
+  tabs from previous goldset cycles, persisted via the now-enabled
+  `xft_browser_profile/`. Same Chrome session-restore behaviour noted in
+  cycle 7's side observations.
+
+
 **Symptom:** Step 11 `browser_interact {"action":"react_fill","ref":"e22","value":"18584828398"}`
 failed with `react_fill failed: element not found`, despite the snapshot from
 step 9 listing `textbox "请输入手机号" [ref=e22]`. Agent recovered by hand-rolling
