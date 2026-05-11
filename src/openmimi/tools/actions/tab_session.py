@@ -90,11 +90,13 @@ async def tab_new(
     url = inp.get("url", "about:blank")
     await engine._exec("tab", "new", url, "--json")
     await engine._refresh_tabs()
+    idx = engine._active_tab_index
+    total = len(engine._tabs) if isinstance(engine._tabs, list) else 0
     image = await engine._take_screenshot()
     return ToolResult(
-        output=f"New tab opened: {url}",
+        output=f"New tab opened: {url} (now at tab {idx} of {total})",
         base64_image=image,
-        details={"open_tabs": engine._tabs, "active_tab": engine._active_tab_index},
+        details={"open_tabs": engine._tabs, "active_tab": idx, "new_tab_index": idx},
     )
 
 

@@ -777,6 +777,42 @@ async def test_tab_new_opens_tab_via_subcommand() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tab_new_reports_new_tab_index() -> None:
+    """Regression for cycle 19: `tab_new` must surface the absolute index of
+    the newly-opened tab so the LLM can `tab_switch` back to it without
+    guessing — important when session-restore has revived stale tabs from
+    earlier cycles and the index of "the tab I just opened" is not the
+    obvious count of new opens."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        # Simulate a profile with 13 stale tabs already open; tab_new lands
+        # the newest example.org page at index 14.
+        _tabs: list[Any] = [{"id": f"t{i}", "url": "stale"} for i in range(14)]
+        _active_tab_index = 14
+
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout="ok")
+
+        async def _refresh_tabs(self) -> None:
+            return None
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("tab_new")(
+        _Engine(), {"url": "https://example.org"}
+    )
+    assert result.is_error is False
+    # The absolute index must appear in the output the LLM sees.
+    assert "14" in result.output
+    assert "https://example.org" in result.output
+    # And in details so downstream callers can read it structurally.
+    assert result.details["new_tab_index"] == 14
+    assert result.details["active_tab"] == 14
+
+
+@pytest.mark.asyncio
 async def test_save_session_requires_file_path() -> None:
     from openmimi.tools import actions
 
