@@ -22,6 +22,33 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 15 — task `xft_fresh_login`
+**Symptom:** Step 14 `react_fill ref=e22 value=18584828398` →
+`react_fill failed: could not resolve ref e22`, even though e22 was a
+live ref in the immediately preceding snapshot. Same root cause silently
+breaking 7 other handlers (force-click / right_click / double_click /
+get_box / wait_for / wait_for_disappear / scroll_until — `wait_for_disappear`
+was the worst, always returning "disappeared" immediately).
+**Audit:** data/audit/a269b309af10451c9c7351985fccc35e.jsonl
+**Root cause:** `agent-browser get box <ref> --json` emits
+`{"success":true,"data":{"x":..,"y":..,"width":..,"height":..},"error":null}`
+— box fields are FLAT on `data`. All eight production callers were doing
+`data.get("box")` and silently getting `None`. Cycle 7's react_fill fix
+appeared to work only because its unit test mocked the wrong (wrapped)
+shape. Verified against the live binary: `agent-browser get box e1 --json`
+returns the flat envelope.
+**Fix:** commit dca6c59 — added module-level `_extract_box` helper in
+`src/openmimi/tools/agent_browser.py` tolerating both shapes; wired all
+8 call sites (`actions/interaction.py`, `actions/extract.py`,
+`actions/scroll.py`, `actions/wait.py`) through it.
+**Tests:** `tests/unit/test_actions_registry.py` —
+`test_react_fill_with_ref_handles_flat_box_response` (real envelope shape),
+`test_extract_box_helper_accepts_both_shapes`.
+**Notes:** LLM-side, the session also hit a slider CAPTCHA
+(`按住左方滑块，向右拖动滑块完成拼图`) and didn't solve it, and burned
+several turns acting on stale refs after reload (steps 9/16/17/21).
+Logged as LLM-reasoning misses; no code change.
+
 ## 2026-05-12 cycle 12 — task `screenshot_desktop`
 **Symptom:** Step 4 `computer batch [{action:shell,command:"setx OPENMIMI_ENABLE_SCREENSHOTS 1"},{action:screenshot}]`
 returned `Step 1 (shell): EXCEPTION - name 'subprocess' is not defined`.
