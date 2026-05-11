@@ -1597,3 +1597,80 @@ async def test_network_log_populates_structured_with_requests() -> None:
     assert result.structured == {"requests": requests}
 
 
+@pytest.mark.asyncio
+async def test_react_fill_with_ref_resolves_box_then_uses_elementFromPoint() -> None:
+    """react_fill must NOT pass the snapshot ref through querySelector.
+
+    Regression test for cycle 7: `document.querySelector("e22")` always
+    returns null because agent-browser refs are opaque handles, not CSS
+    selectors. The fix resolves the ref to a box, then targets the
+    element via document.elementFromPoint.
+    """
+    from openmimi.tools import actions
+
+    exec_calls: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            exec_calls.append(args)
+            if args[:2] == ("get", "box"):
+                return SimpleNamespace(
+                    stdout=json.dumps(
+                        {"box": {"x": 100, "y": 200, "width": 50, "height": 20}}
+                    )
+                )
+            # eval call
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {"result": {"ok": True, "tag": "input", "method": "prototype_setter"}}
+                )
+            )
+
+        def _parse_data(self, raw: str) -> dict[str, Any]:
+            return json.loads(raw)
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("react_fill")(
+        _Engine(), {"ref": "e22", "value": "hello"}
+    )
+
+    assert result.is_error is False
+    assert "React-filled" in result.output
+    # First call: resolve ref to box. Second call: eval the React-aware setter.
+    assert exec_calls[0] == ("get", "box", "e22", "--json")
+    assert exec_calls[1][0] == "eval"
+    eval_js = exec_calls[1][1]
+    assert "document.elementFromPoint" in eval_js
+    # The buggy implementation would have embedded querySelector("e22").
+    assert 'querySelector("e22")' not in eval_js
+    assert 'querySelector(\\"e22\\")' not in eval_js
+    # Center of the mocked box: (125, 210).
+    assert "125" in eval_js and "210" in eval_js
+
+
+@pytest.mark.asyncio
+async def test_react_fill_with_ref_reports_error_when_box_unresolvable() -> None:
+    """If agent-browser can't resolve the ref to a box, react_fill must
+    surface a clear error instead of running buggy fallback JS."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            assert args[:2] == ("get", "box")
+            return SimpleNamespace(stdout=json.dumps({}))
+
+        def _parse_data(self, raw: str) -> dict[str, Any]:
+            return json.loads(raw)
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("react_fill")(
+        _Engine(), {"ref": "e99", "value": "x"}
+    )
+    assert result.is_error is True
+    assert "could not resolve ref e99" in result.output
+
+

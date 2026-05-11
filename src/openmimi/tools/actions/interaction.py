@@ -262,11 +262,37 @@ async def react_fill(
         return ToolResult(output="react_fill requires 'value'", is_error=True)
 
     if ref:
-        css_selector = ref.lstrip("@")
+        # agent-browser snapshot refs (e.g. "e22") are NOT CSS selectors —
+        # they're opaque handles into the latest snapshot. Resolve to a box
+        # first, then locate the element via `document.elementFromPoint`
+        # so the React-aware setter can run against the real DOM node.
+        try:
+            box_result = await engine._exec("get", "box", ref, "--json")
+            box_data = engine._parse_data(box_result.stdout)
+            box = box_data.get("box") if isinstance(box_data, dict) else None
+            if not box:
+                return ToolResult(
+                    output=f"react_fill failed: could not resolve ref {ref}",
+                    is_error=True,
+                )
+            cx = box.get("x", 0) + box.get("width", 0) / 2
+            cy = box.get("y", 0) + box.get("height", 0) / 2
+        except Exception as exc:
+            return ToolResult(
+                output=f"react_fill failed resolving ref {ref}: {exc}",
+                is_error=True,
+            )
         js = f"""
         (() => {{
-            const el = document.querySelector({json.dumps(css_selector)});
-            if (!el) return {{error: 'element not found'}};
+            let el = document.elementFromPoint({cx}, {cy});
+            // Walk up to find an <input>/<textarea>/<select> if elementFromPoint
+            // lands on a wrapper (common with custom React inputs).
+            while (el && !['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) {{
+                const inner = el.querySelector('input, textarea, select');
+                if (inner) {{ el = inner; break; }}
+                el = el.parentElement;
+            }}
+            if (!el) return {{error: 'element not found at point'}};
             const tag = el.tagName.toLowerCase();
             if (tag === 'input' || tag === 'textarea') {{
                 const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||

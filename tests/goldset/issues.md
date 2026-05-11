@@ -22,6 +22,53 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 7 — task `xft_fresh_login`
+**Symptom:** Step 11 `browser_interact {"action":"react_fill","ref":"e22","value":"18584828398"}`
+failed with `react_fill failed: element not found`, despite the snapshot from
+step 9 listing `textbox "请输入手机号" [ref=e22]`. Agent recovered by hand-rolling
+JS eval-based fills (steps 15/16) and never used react_fill again.
+**Audit:** data/audit/eab0029689574fad92838493fe29579e.jsonl
+**Root cause:** `actions/interaction.py::react_fill` did
+`css_selector = ref.lstrip("@")` and embedded that into
+`document.querySelector(css_selector)`. Agent-browser snapshot refs (e.g.
+`"e22"`) are NOT CSS selectors — they're opaque handles into the latest
+snapshot, resolved server-side by the agent-browser CLI. `querySelector("e22")`
+matches no element in the DOM, so the call always returned `{error: 'element
+not found'}`. All sibling handlers (`click`, `fill`, `type`, `check`) correctly
+delegate refs via `engine._exec("click", ref, …)`; only `react_fill` had this
+querySelector shortcut.
+**Fix:** commit \<pending\> — `react_fill` now resolves a ref via
+`engine._exec("get", "box", ref, …)`, then locates the element with
+`document.elementFromPoint(centerX, centerY)` (walking up to the nearest
+input/textarea/select if needed) before running the React-aware prototype
+setter. `target_text` path is unchanged.
+**Tests:** `tests/unit/test_actions_registry.py::test_react_fill_with_ref_resolves_box_then_uses_elementFromPoint`
++ `test_react_fill_with_ref_reports_error_when_box_unresolvable` — assert
+the first `_exec` is `("get", "box", "e22", "--json")`, the eval JS uses
+`document.elementFromPoint` and does NOT embed `querySelector("e22")`, and
+unresolvable refs surface a clear error.
+**Side observations (no code fix):**
+- Step 14 `type ref=e22` → "Unknown ref: e22": LLM tried to type without
+  re-snapshotting after the click in step 13. agent-browser refs invalidate
+  per snapshot generation — documented behavior (see cycle 1 side observation).
+- Step 17 `click ref=e21` → "Unknown ref: e21": same staleness pattern; the
+  agent had run several non-snapshot ops since the last snapshot.
+- Step 23 `eval` → `ReferenceError: clearAssit is not defined`: the site's own
+  `onclick` handler at xft.cmbchina.com:1694 references a missing function.
+  Site-side JS bug, surfaces as `is_error=true` only because it bubbled out of
+  agent-browser's eval — not actionable on our side.
+- Step 29 `tab_list` showed 8 tabs; tabs 3-5 were `example.com/.org/.net` from
+  cycle 3's `tabs_example` task. The xft profile (`xft_browser_profile/`) is
+  configured in `~/.openmimi/config.json` (or via browser.user_data_dir), and
+  Chrome's session-restore is re-opening tabs left by earlier cycles. Possible
+  future cleanup: agent-browser could explicitly close non-task tabs on start,
+  or `tabs_example` could close its tabs at end. Logged but not fixed.
+- Run hit `max_turns=30` (configured globally in `~/.openmimi/config.json`),
+  not the schema default of 50. Working as configured — explicit user choice,
+  not a bug.
+
+---
+
 ## 2026-05-12 cycle 6 — task `xft_after_login`
 **Symptom:** Task asked the agent to use the already-logged-in xft.cmbchina.com
 session via the persistent profile, but `mimi run` landed on the public marketing
