@@ -37,7 +37,7 @@ matches no element in the DOM, so the call always returned `{error: 'element
 not found'}`. All sibling handlers (`click`, `fill`, `type`, `check`) correctly
 delegate refs via `engine._exec("click", ref, …)`; only `react_fill` had this
 querySelector shortcut.
-**Fix:** commit \<pending\> — `react_fill` now resolves a ref via
+**Fix:** commit 254265f — `react_fill` now resolves a ref via
 `engine._exec("get", "box", ref, …)`, then locates the element with
 `document.elementFromPoint(centerX, centerY)` (walking up to the nearest
 input/textarea/select if needed) before running the React-aware prototype
