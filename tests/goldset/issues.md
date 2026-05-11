@@ -32,7 +32,7 @@ in `data/goldset_runs/cycle_000_nav_wikipedia.log`; no
 which dropped straight into the chat REPL ignoring `sys.argv`. So
 `mimi run "..."`, `mimi audit-stats`, `mimi replay <sid>` all silently
 fell through to the REPL.
-**Fix:** see commit on `main` — `chat_main` now sniffs `sys.argv[1]` and
+**Fix:** commit e209a7f — `chat_main` now sniffs `sys.argv[1]` and
 hands off to `app()` whenever it matches a registered typer subcommand
 (derived from `app.registered_commands`) or is `--help` / `-h`. Bare
 `mimi` with no args still enters the REPL.
