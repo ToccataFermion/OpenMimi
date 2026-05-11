@@ -157,6 +157,43 @@ def test_replay_renders_jsonl_lines(
     assert "screens/abc123/step_1.png" in out
 
 
+def test_replay_handles_empty_result_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: goldset cycle 3 caught `mimi replay` crashing with IndexError when
+    a record had ``result_summary=""`` (browser_extract get_title on an empty page).
+    ``"".splitlines()`` returns ``[]`` so ``[0]`` blew up. Replay must render
+    such rows with an empty summary, not crash the whole session view.
+    """
+    from openmimi.config.schema import AppConfig
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.audit_dir.mkdir(parents=True)
+    monkeypatch.setattr("openmimi.cli.load_config", lambda: cfg)
+
+    sid = "blanksid"
+    audit_file = cfg.storage.audit_dir / f"{sid}.jsonl"
+    rec = {
+        "ts": "2026-05-12T01:55:00.000+00:00",
+        "session_id": sid,
+        "step": 1,
+        "tool": "browser_extract",
+        "tool_input": {"action": "get_title"},
+        "result_summary": "",
+        "is_error": False,
+        "error_code": None,
+        "image_path": None,
+        "duration_ms": 187,
+    }
+    audit_file.write_text(json.dumps(rec), encoding="utf-8")
+
+    result = runner.invoke(app, ["replay", sid])
+    assert result.exit_code == 0
+    assert "step   1 [OK ]" in result.output
+    assert "browser_extract" in result.output
+
+
 def test_audit_stats_renders_table_for_real_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

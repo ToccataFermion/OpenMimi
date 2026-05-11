@@ -22,6 +22,34 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 3 — task `tabs_example`
+**Symptom:** Task completed but `mimi replay 4e1f0585876d4bd2b40658ade4bad298`
+crashed with `IndexError: list index out of range` partway through.
+**Audit:** data/audit/4e1f0585876d4bd2b40658ade4bad298.jsonl
+**Root cause:** `cli.py::replay` did
+`(rec.get("result_summary") or "").splitlines()[0]`. Step 8 was
+`browser_extract get_title` on an empty active tab, which returned
+`result_summary=""`. `"".splitlines()` is `[]`, so `[0]` blew up and
+the whole replay aborted halfway. Replay should be defensive about
+audit-log content — one weird record shouldn't blow away the rest of
+the session view.
+**Fix:** commit pending — fall back to `""` when `splitlines()` is
+empty (`cli.py:276-279`).
+**Tests:** `tests/unit/test_cli.py::test_replay_handles_empty_result_summary`
+— audit file with one `result_summary=""` record; asserts exit_code==0
+and the row still renders.
+**Side observation (no fix):** `tab_switch tab_index=2` landed the agent
+on an about:blank pre-existing tab (URL=about:blank, title=""), so it
+re-navigated tab 2 to example.org at step 12 to recover. tab_new
+appears to leave an initial blank tab in position 1 that the LLM didn't
+account for; the agent assumed [1=com, 2=org, 3=net] but the actual
+order was [1=blank, 2=com, 3=org, 4=net]. This is an LLM-reasoning
+miss (should call `tab_list` first to see real indices), not a tool
+bug. Could revisit with a tab_new-without-leading-blank policy if it
+recurs.
+
+---
+
 ## 2026-05-12 cycle 1 — task `search_duckduckgo`
 **Symptom:** step 7 `browser_navigate {"action":"wait_for_navigation","milliseconds":15000}`
 timed out after **10000ms** despite the LLM asking for 15000ms.

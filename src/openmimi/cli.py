@@ -273,7 +273,8 @@ def replay(session_id: str) -> None:
         )
         if len(tool_input_preview) > 80:
             tool_input_preview = tool_input_preview[:77] + "..."
-        summary = (rec.get("result_summary") or "").splitlines()[0]
+        summary_lines = (rec.get("result_summary") or "").splitlines()
+        summary = summary_lines[0] if summary_lines else ""
         if len(summary) > 80:
             summary = summary[:77] + "..."
         typer.echo(
