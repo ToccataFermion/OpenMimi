@@ -22,6 +22,34 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 19 — task `tabs_example`
+**Symptom:** Task succeeded but burned 13 tool steps / 29 LLM turns for
+what should be 4 calls. Agent opened the 3 tabs, then
+`tab_switch tab_index=2` landed on a stale xft.cmbchina.com tab (title:
+`招商银行薪福通...`). It had to call `tab_list`, see 14 total tabs
+(2 stale xft, then example.com / 2 blanks / example.org / example.net,
+plus more), `tab_switch` to tab 4 (still wrong), then `tab_switch` to
+tab 14, and finally `get_title` → "Example Domain".
+**Audit:** data/audit/d2f179723c714772a87c1c71ae39c8b8.jsonl
+**Root cause:** Same persistent-profile session-restore behaviour
+called out in cycle 3 (`xft_browser_profile/` keeps tabs alive across
+mimi runs). cycle 3 said "Could revisit with a tab_new-without-leading-
+blank policy if it recurs." It recurred, and got worse. The deeper
+problem: `tab_new` reported only `"New tab opened: <url>"` — the LLM
+had no way to know what absolute index its new tab landed on without a
+follow-up `tab_list`.
+**Fix:** commit 5eb7b3c — `tab_new` now reports
+`"New tab opened: <url> (now at tab N of M)"` and exposes
+`new_tab_index` in `details`. LLM can `tab_switch tab_index=N` without
+guessing.
+**Tests:** `tests/unit/test_actions_registry.py::test_tab_new_reports_new_tab_index`
+— simulates a profile with 13 stale tabs already open, asserts the
+absolute index (14) appears in both `output` and `details`.
+**Notes:** Does NOT address the underlying stale-tab accumulation
+(Chrome session-restore reopening earlier-cycle tabs). A `--restore-last-session=false`
+launch flag for the persistent profile would be the proper fix; that
+lives below the agent-browser layer.
+
 ## 2026-05-12 cycle 15 — task `xft_fresh_login`
 **Symptom:** Step 14 `react_fill ref=e22 value=18584828398` →
 `react_fill failed: could not resolve ref e22`, even though e22 was a
