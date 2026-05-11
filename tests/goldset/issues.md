@@ -33,7 +33,7 @@ crashed with `IndexError: list index out of range` partway through.
 the whole replay aborted halfway. Replay should be defensive about
 audit-log content — one weird record shouldn't blow away the rest of
 the session view.
-**Fix:** commit pending — fall back to `""` when `splitlines()` is
+**Fix:** commit 8a6d38e — fall back to `""` when `splitlines()` is
 empty (`cli.py:276-279`).
 **Tests:** `tests/unit/test_cli.py::test_replay_handles_empty_result_summary`
 — audit file with one `result_summary=""` record; asserts exit_code==0
