@@ -434,6 +434,21 @@ async def sampling_loop(
                 _log.warning("verifier raised %s: %s", exc.__class__.__name__, exc)
                 outcome = "continue"
             if outcome == "done":
+                # Safety net: if the verifier claims done but there are still
+                # pending steps ahead, downgrade to continue + advance so the
+                # executor keeps going instead of aborting early.
+                has_pending_steps = plan.current_step < len(plan.steps) - 1
+                if has_pending_steps:
+                    _log.warning(
+                        "verifier returned done but plan has pending steps (%d/%d); advancing",
+                        plan.current_step,
+                        len(plan.steps),
+                    )
+                    _tool_progress(
+                        f"[planner] verifier premature done at step {plan.current_step + 1}; advancing"
+                    )
+                    plan.advance()
+                    continue
                 _log.info("verifier reported plan complete; ending loop")
                 return messages
             if outcome == "replan":

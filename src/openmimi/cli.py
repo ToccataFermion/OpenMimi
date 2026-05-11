@@ -154,7 +154,7 @@ def _mimi_version() -> str:
         from importlib.metadata import version
         return version("openmimi")
     except Exception:
-        return "0.0.1"
+        return "0.1.0"
 
 
 def _print_welcome(session_id: str) -> None:

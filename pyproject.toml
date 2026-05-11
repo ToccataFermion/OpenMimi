@@ -1,6 +1,6 @@
 [project]
 name = "openmimi"
-version = "0.0.1"
+version = "0.1.0"
 description = "Local Windows AI Agent that operates browsers and desktop apps via vision-based tool use."
 readme = "README.md"
 requires-python = ">=3.11"

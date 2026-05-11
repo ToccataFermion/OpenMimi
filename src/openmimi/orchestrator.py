@@ -61,6 +61,10 @@ def _format_plan_summary(plan: Plan) -> str:
         lines.append(
             f"  {i}. {step.step} [success: {step.success_criteria}]"
         )
+    lines.append(
+        "\nYou must execute ALL steps above in order. "
+        "Do not stop or reply to the user until every step is completed."
+    )
     return "\n".join(lines)
 
 

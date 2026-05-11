@@ -142,10 +142,11 @@ class NullVerifier:
 
 _LLM_VERIFIER_SYSTEM = (
     "You are a plan-progress verifier for an autonomous agent. "
-    "Read the current plan step's success criteria and a tail of the "
-    "agent's recent activity, then decide one of: "
-    '"done" (criteria met), "continue" (still in progress), '
-    '"replan" (stuck or going wrong way). '
+    "Your job is to check whether the ENTIRE user task is fully finished, "
+    "not just the current step. "
+    "Return 'done' ONLY when every planned step has been completed. "
+    "If the current step is finished but later steps remain, return 'continue'. "
+    "If the agent is stuck or off-track, return 'replan'. "
     "Output STRICT JSON only with shape "
     '{"outcome": "done|continue|replan", "reason": "<one sentence>"} — '
     "no prose, no markdown, no fences."
@@ -283,11 +284,21 @@ class LLMVerifier:
             if recent_messages
             else []
         )
+        total_steps = len(plan.steps)
+        current_idx = plan.current_step + 1
+        plan_summary = "\n".join(
+            f"  {i + 1}. {s.step} [{'DONE' if s.done else 'PENDING'}]"
+            for i, s in enumerate(plan.steps)
+        )
         user_prompt = (
+            f"Plan ({current_idx} of {total_steps} steps):\n"
+            f"{plan_summary}\n\n"
             f"Current step: {current.step}\n"
             f"Success criteria: {current.success_criteria}\n\n"
             f"Recent agent activity (oldest first):\n"
             f"{_summarize_messages(tail) or '(no activity)'}\n\n"
+            "Instructions: Return 'done' ONLY if ALL steps above are marked DONE. "
+            "If the current step is finished but later steps are still PENDING, return 'continue'. "
             'Reply with ONLY: {"outcome": "done|continue|replan", "reason": "..."}'
         )
         try:
