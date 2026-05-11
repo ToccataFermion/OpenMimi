@@ -22,6 +22,43 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 6 — task `xft_after_login`
+**Symptom:** Task asked the agent to use the already-logged-in xft.cmbchina.com
+session via the persistent profile, but `mimi run` landed on the public marketing
+page (with "登录"/"免费注册" visible). Agent then burned 30 tool steps / 62 LLM
+turns trying alternate logins, shell file searches, etc., and hit `max_turns`
+with "(no final text)".
+**Audit:** data/audit/ac204aca6592486cb86ae73ccf4eea79.jsonl
+**Root cause:** `xft_browser_profile/` exists at repo root with valid Chrome
+profile data (Default/, Local State, first_party_sets.db, ...), and
+`AgentBrowserTool.__init__` accepts `user_data_dir`, but the orchestrator never
+passed it and `BrowserConfig` had no field for it. So every `mimi run` got a
+fresh ephemeral profile — the saved cookies/login were unreachable.
+**Fix:** commit <pending> — added `user_data_dir: Path | None = None` to
+`BrowserConfig` (`config/schema.py`), and `orchestrator.py:217-226` now passes
+`user_data_dir=str(cfg.browser.user_data_dir) if cfg.browser.user_data_dir else None`
+to `AgentBrowserTool(...)`. To actually use the xft profile, set
+`{"browser":{"user_data_dir":"xft_browser_profile"}}` in `.openmimi.json`.
+**Tests:** `tests/unit/test_orchestrator.py::test_from_env_passes_user_data_dir_when_configured`
++ `test_from_env_user_data_dir_defaults_to_none` — assert the kwarg flows through
+when set and stays `None` by default.
+**Side observations (no code fix):**
+- Step 24 `shell dir /s /b C:\*xft*.jsonl ...` searched the entire C: drive and
+  was killed by the 300s shell timeout (`TOOL_INTERNAL_ERROR`). Tool behaved
+  correctly — bounded a doomed full-disk scan. LLM-reasoning miss: should have
+  scoped the search to the project directory or used Glob-style narrow patterns.
+- Steps 10/15/22 ran Linux-style paths (`/root/.config/...`, `find /`) on Windows.
+  cmd.exe returned cp936-encoded mojibake stderr but the tool flagged
+  `is_error=true` correctly. LLM-reasoning miss — agent should have read the
+  earlier "系统找不到指定的路径" feedback rather than retrying variants.
+- The 30-step ceiling came from `loop.py::sampling_loop`'s function default
+  `max_turns: int = 30`, even though `AppConfig.max_turns` defaults to 50. The
+  orchestrator does pass `cfg.max_turns` explicitly, so this didn't bite here —
+  but the mismatched defaults are a future trap. Filed as a follow-up note;
+  not patched this cycle.
+
+---
+
 ## 2026-05-12 cycle 3 — task `tabs_example`
 **Symptom:** Task completed but `mimi replay 4e1f0585876d4bd2b40658ade4bad298`
 crashed with `IndexError: list index out of range` partway through.

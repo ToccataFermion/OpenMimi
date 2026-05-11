@@ -223,6 +223,7 @@ class Orchestrator:
             screenshot_scale=cfg.browser.screenshot_scale,
             screenshot_quality=cfg.browser.screenshot_quality,
             screenshot_format=cfg.browser.screenshot_format,
+            user_data_dir=str(cfg.browser.user_data_dir) if cfg.browser.user_data_dir else None,
         )
         # Register focused facade tools instead of the single god tool
         # to reduce per-request LLM context/token usage.

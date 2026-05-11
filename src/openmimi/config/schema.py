@@ -21,6 +21,11 @@ class BrowserConfig(BaseModel):
     screenshot_scale: float = 0.5
     screenshot_quality: int = 75
     screenshot_format: str = "jpeg"
+    # Optional persistent Chrome profile directory (cookies, cache, extensions,
+    # IndexedDB). When set, AgentBrowserTool launches Chrome with
+    # --user-data-dir=<path>, so a manual login persists across `mimi run`
+    # invocations. Leave None for an ephemeral profile.
+    user_data_dir: Path | None = None
 
 
 class StorageConfig(BaseModel):

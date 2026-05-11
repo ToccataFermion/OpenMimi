@@ -657,6 +657,74 @@ def test_from_env_truncate_strategy_leaves_compress_llm_none(
     assert orch._compress_llm is None
 
 
+def test_from_env_passes_user_data_dir_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`cfg.browser.user_data_dir` must reach AgentBrowserTool as a string path."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", lambda **kw: object()
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _fake_browser_tool(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool", _fake_browser_tool
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.EpisodicStore", lambda: object()
+    )
+
+    profile = tmp_path / "profile"
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+    cfg.browser.user_data_dir = profile
+
+    Orchestrator.from_env(config=cfg)
+    assert captured["user_data_dir"] == str(profile)
+
+
+def test_from_env_user_data_dir_defaults_to_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default config leaves user_data_dir at None — ephemeral profile."""
+    monkeypatch.delenv("OPENMIMI_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AnthropicClient", lambda **kw: object()
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _fake_browser_tool(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "openmimi.orchestrator.AgentBrowserTool", _fake_browser_tool
+    )
+    monkeypatch.setattr(
+        "openmimi.orchestrator.EpisodicStore", lambda: object()
+    )
+
+    cfg = AppConfig()
+    cfg.storage.audit_dir = tmp_path / "audit"
+    cfg.storage.screen_dir = tmp_path / "screens"
+    cfg.browser.download_dir = tmp_path / "dl"
+
+    Orchestrator.from_env(config=cfg)
+    assert captured["user_data_dir"] is None
+
+
 # --- Episodic memory wiring (#9 stage 2) -----------------------------------
 
 
