@@ -1674,3 +1674,82 @@ async def test_react_fill_with_ref_reports_error_when_box_unresolvable() -> None
     assert "could not resolve ref e99" in result.output
 
 
+@pytest.mark.asyncio
+async def test_react_fill_with_ref_handles_flat_box_response() -> None:
+    """agent-browser's `get box` returns {x,y,width,height} flat under
+    `data`, NOT wrapped in `data.box`. Regression for cycle 15: react_fill
+    (and every get-box caller) silently failed in production because the
+    parser only looked at `data.box`, while the test mocks happened to use
+    the wrapped shape that the binary never emits.
+    """
+    from openmimi.tools import actions
+
+    exec_calls: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            exec_calls.append(args)
+            if args[:2] == ("get", "box"):
+                # REAL agent-browser shape: box fields flat, no `box` wrapper.
+                return SimpleNamespace(
+                    stdout=json.dumps(
+                        {
+                            "success": True,
+                            "data": {"x": 100, "y": 200, "width": 50, "height": 20},
+                            "error": None,
+                        }
+                    )
+                )
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "result": {
+                                "ok": True,
+                                "tag": "input",
+                                "method": "prototype_setter",
+                            }
+                        },
+                        "error": None,
+                    }
+                )
+            )
+
+        def _parse_data(self, raw: str) -> dict[str, Any]:
+            parsed = json.loads(raw)
+            return parsed.get("data", {})
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("react_fill")(
+        _Engine(), {"ref": "e22", "value": "hello"}
+    )
+
+    assert result.is_error is False, result.output
+    assert "React-filled" in result.output
+    eval_js = exec_calls[1][1]
+    # Center of the flat box: (125, 210).
+    assert "125" in eval_js and "210" in eval_js
+
+
+@pytest.mark.asyncio
+async def test_extract_box_helper_accepts_both_shapes() -> None:
+    """`_extract_box` must handle the real agent-browser shape (flat
+    x/y/width/height under data) AND the wrapped {box:{...}} form that
+    older mocks rely on. Both should produce the same dict."""
+    from openmimi.tools.agent_browser import _extract_box
+
+    flat = {"x": 1, "y": 2, "width": 3, "height": 4}
+    assert _extract_box(flat) == flat
+    assert _extract_box({"box": flat}) == flat
+    # missing field → None
+    assert _extract_box({"x": 1, "y": 2, "width": 3}) is None
+    # not a dict → None
+    assert _extract_box(None) is None
+    assert _extract_box("not-a-dict") is None
+    # empty
+    assert _extract_box({}) is None
+
+

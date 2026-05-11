@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..result import ToolResult
+from ..agent_browser import _extract_box
 from . import register
 
 if TYPE_CHECKING:
@@ -99,7 +100,7 @@ async def scroll_until(
             if selector:
                 result = await engine._exec("get", "box", selector, "--json")
                 data = engine._parse_data(result.stdout)
-                box = data.get("box") if isinstance(data, dict) else None
+                box = _extract_box(data)
                 if box:
                     return ToolResult(
                         output=f"Found after scrolling {steps} steps: {selector}",

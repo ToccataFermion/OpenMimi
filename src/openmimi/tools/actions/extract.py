@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..errors import ErrorCode
 from ..result import ToolResult
+from ..agent_browser import _extract_box
 from . import register
 
 if TYPE_CHECKING:
@@ -409,7 +410,7 @@ async def get_box(
     try:
         result = await engine._exec("get", "box", selector, "--json")
         data = engine._parse_data(result.stdout)
-        box = data.get("box") if isinstance(data, dict) else None
+        box = _extract_box(data)
         if not box:
             return ToolResult(
                 output=f"Could not get box for {selector}", is_error=True

@@ -790,3 +790,19 @@ class AgentBrowserTool(ToolBase):
         snapshot_text = d.get("snapshot", "")
         refs = d.get("refs", {})
         return snapshot_text, refs
+
+
+def _extract_box(data: Any) -> dict[str, Any] | None:
+    # agent-browser returns `get box` payload with x/y/width/height
+    # directly under `data` — NOT wrapped in `data.box`. Tolerate the
+    # wrapped shape too for older versions / unit-test mocks.
+    if not isinstance(data, dict):
+        return None
+    if all(k in data for k in ("x", "y", "width", "height")):
+        return data
+    inner = data.get("box")
+    if isinstance(inner, dict) and all(
+        k in inner for k in ("x", "y", "width", "height")
+    ):
+        return inner
+    return None

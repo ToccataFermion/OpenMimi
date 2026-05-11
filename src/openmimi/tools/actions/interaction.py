@@ -17,6 +17,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from ..result import ToolResult
+from ..agent_browser import _extract_box
 from . import register
 from ._keys import cdp_key_code
 
@@ -68,7 +69,7 @@ async def _click_with_mouse(
     try:
         result = await engine._exec("get", "box", selector, "--json")
         data = engine._parse_data(result.stdout)
-        box = data.get("box") if isinstance(data, dict) else None
+        box = _extract_box(data)
         if not box:
             return ToolResult(
                 output=f"force click failed: could not get box for {selector}",
@@ -109,7 +110,7 @@ async def right_click(
     try:
         result = await engine._exec("get", "box", selector, "--json")
         data = engine._parse_data(result.stdout)
-        box = data.get("box") if isinstance(data, dict) else None
+        box = _extract_box(data)
         if not box:
             return ToolResult(
                 output=f"right_click failed: could not get box for {selector}",
@@ -148,7 +149,7 @@ async def double_click(
     try:
         result = await engine._exec("get", "box", selector, "--json")
         data = engine._parse_data(result.stdout)
-        box = data.get("box") if isinstance(data, dict) else None
+        box = _extract_box(data)
         if not box:
             return ToolResult(
                 output=f"double_click failed: could not get box for {selector}",
@@ -269,7 +270,7 @@ async def react_fill(
         try:
             box_result = await engine._exec("get", "box", ref, "--json")
             box_data = engine._parse_data(box_result.stdout)
-            box = box_data.get("box") if isinstance(box_data, dict) else None
+            box = _extract_box(box_data)
             if not box:
                 return ToolResult(
                     output=f"react_fill failed: could not resolve ref {ref}",
