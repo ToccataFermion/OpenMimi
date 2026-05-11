@@ -34,7 +34,7 @@ mentioned `wait_for` and `wait_for_network_idle`, omitting
 `milliseconds` (the natural shorthand). The audit log was indistinguishable
 from a genuine "page actually didn't navigate" timeout, which is the worst
 kind of silent failure.
-**Fix:** commit pending — handler now accepts `timeout_ms` OR `milliseconds`
+**Fix:** commit 4cf7bf5 — handler now accepts `timeout_ms` OR `milliseconds`
 (`timeout_ms` wins if both present); schema description for `timeout_ms`
 now lists wait_for_navigation explicitly and notes the `milliseconds`
 fallback so the LLM picks the canonical name next time.
