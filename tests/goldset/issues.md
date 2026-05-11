@@ -34,7 +34,7 @@ profile data (Default/, Local State, first_party_sets.db, ...), and
 `AgentBrowserTool.__init__` accepts `user_data_dir`, but the orchestrator never
 passed it and `BrowserConfig` had no field for it. So every `mimi run` got a
 fresh ephemeral profile — the saved cookies/login were unreachable.
-**Fix:** commit <pending> — added `user_data_dir: Path | None = None` to
+**Fix:** commit b3a2304 — added `user_data_dir: Path | None = None` to
 `BrowserConfig` (`config/schema.py`), and `orchestrator.py:217-226` now passes
 `user_data_dir=str(cfg.browser.user_data_dir) if cfg.browser.user_data_dir else None`
 to `AgentBrowserTool(...)`. To actually use the xft profile, set
