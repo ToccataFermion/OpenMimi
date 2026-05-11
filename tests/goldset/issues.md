@@ -22,6 +22,27 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 25 — task `search_duckduckgo`
+**Symptom:** `browser_advanced.wait` calls at steps 2 and 6 sent
+`duration_ms: 4000` and `duration_ms: 5000` respectively, but the audit
+log shows `"Waited 1000ms"` for both — the audit row truthfully reported
+what the handler actually did (default 1000ms wait), making the lie
+silent and untraceable.
+**Audit:** data/audit/68136973d0d546099621f33550e708ad.jsonl
+**Root cause:** `actions/wait.py:wait` only read `inp.get("milliseconds",
+1000)`, but `browser_advanced.py:52-54` advertises both `milliseconds`
+AND `duration_ms` in the schema. The LLM picked the second documented
+name and the handler silently fell back to default. The other wait_*
+handlers already accept `timeout_ms` / `milliseconds` aliases, so this
+was a localized gap, not a schema-wide problem.
+**Fix:** commit 015251a — accept `milliseconds`, `duration_ms`, and
+`timeout_ms` in `actions/wait.py:wait` (in that precedence order).
+**Tests:** added `test_wait_handler_accepts_duration_ms_alias` and
+`test_wait_handler_accepts_timeout_ms_alias` in
+`tests/unit/test_actions_registry.py`.
+
+---
+
 ## 2026-05-12 cycle 23 — task `xft_fresh_login` (recurring)
 **Symptom:** Same as cycle 15 — session hit max_turns at step 30 with
 "(no final text)" while attempting to solve the xft slider CAPTCHA.
