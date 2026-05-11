@@ -22,6 +22,33 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 23 — task `xft_fresh_login` (recurring)
+**Symptom:** Same as cycle 15 — session hit max_turns at step 30 with
+"(no final text)" while attempting to solve the xft slider CAPTCHA.
+Login form fill (steps 10-13) worked cleanly thanks to the
+react_fill / `_extract_box` fixes from cycles 5 + 15; agent reached the
+CAPTCHA then spun on JS-based puzzle-piece analysis (canvas reads,
+gradient cols, dark-column maps) for 15 turns without ever issuing a
+`mouse_drag`.
+**Audit:** data/audit/87124fc20bc247f595cb613e7203d03b.jsonl
+**Root cause (compound):**
+1. LLM-reasoning miss — agent over-investigates the puzzle image and
+   never commits to the actual drag motion. Same as cycle 15.
+2. The task prompt explicitly says "solve it via the OS-level computer
+   tool (focus_window → screenshot → detect_color → mouse_drag)" but
+   `computer.screenshot` is gated by `OPENMIMI_ENABLE_SCREENSHOTS`,
+   which is OFF in this environment. Step 17 returned the "Screenshots
+   disabled" guidance. The task as written is therefore unsolvable in
+   the current cron env regardless of LLM quality.
+**Fix:** none — would need either the env flag enabled in cron, or a
+fundamentally better slider-CAPTCHA solver. Two consecutive cycles
+(15, 23) confirm this as a load-bearing recurring failure for task[7]
+and a chain failure source for task[6] (`xft_after_login`).
+**Tests:** n/a.
+**Notes:** Step 23 errored with `TypeError: canvases.map is...` — that
+was from the agent's own JS, not openmimi code. Tab accumulation
+continues but didn't bite this cycle.
+
 ## 2026-05-12 cycle 22 — task `xft_after_login`
 **Symptom:** Task expected the persistent profile to already be logged
 in; agent navigated to xft.cmbchina.com and found the public login form
