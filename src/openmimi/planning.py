@@ -146,7 +146,12 @@ _LLM_VERIFIER_SYSTEM = (
     "not just the current step. "
     "Return 'done' ONLY when every planned step has been completed. "
     "If the current step is finished but later steps remain, return 'continue'. "
-    "If the agent is stuck or off-track, return 'replan'. "
+    "Return 'replan' ONLY when one of the following is true:\n"
+    "  1) The agent has failed the SAME step 3 or more times in a row (persistent failure).\n"
+    "  2) The agent is clearly working on the WRONG task entirely (goal drift).\n"
+    "DO NOT return 'replan' for transient issues such as a single failed click, "
+    "element not found, or network timeout — the executor has built-in retry and "
+    "will recover automatically. Most temporary errors should yield 'continue'.\n"
     "Output STRICT JSON only with shape "
     '{"outcome": "done|continue|replan", "reason": "<one sentence>"} — '
     "no prose, no markdown, no fences."
@@ -193,6 +198,30 @@ def _parse_outcome(text: str) -> VerifyOutcome | None:
             if isinstance(outcome, str) and outcome in _OUTCOMES:
                 return outcome  # type: ignore[return-value]
     return None
+
+
+def _count_consecutive_errors(messages: list[dict[str, Any]]) -> int:
+    """Count how many recent tool_result blocks have ``is_error=True``.
+
+    Walks backwards from the end of ``messages`` and counts contiguous
+    ``tool_result`` blocks with ``is_error=True``. Stops at the first
+    non-error tool_result or non-tool_result message.
+    """
+    count = 0
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in reversed(content):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_result":
+                continue
+            if block.get("is_error"):
+                count += 1
+            else:
+                return count
+    return count
 
 
 def _summarize_messages(
@@ -290,15 +319,18 @@ class LLMVerifier:
             f"  {i + 1}. {s.step} [{'DONE' if s.done else 'PENDING'}]"
             for i, s in enumerate(plan.steps)
         )
+        recent_errors = _count_consecutive_errors(tail)
         user_prompt = (
             f"Plan ({current_idx} of {total_steps} steps):\n"
             f"{plan_summary}\n\n"
             f"Current step: {current.step}\n"
-            f"Success criteria: {current.success_criteria}\n\n"
+            f"Success criteria: {current.success_criteria}\n"
+            f"Consecutive failed attempts at this step: {recent_errors}\n\n"
             f"Recent agent activity (oldest first):\n"
             f"{_summarize_messages(tail) or '(no activity)'}\n\n"
             "Instructions: Return 'done' ONLY if ALL steps above are marked DONE. "
             "If the current step is finished but later steps are still PENDING, return 'continue'. "
+            "Return 'replan' ONLY if there are 3+ consecutive failures for this step or clear goal drift. "
             'Reply with ONLY: {"outcome": "done|continue|replan", "reason": "..."}'
         )
         try:
