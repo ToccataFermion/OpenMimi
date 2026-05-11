@@ -31,7 +31,17 @@ if TYPE_CHECKING:
 async def wait(
     engine: "AgentBrowserTool", inp: dict[str, Any]
 ) -> ToolResult:
-    ms = inp.get("milliseconds", 1000)
+    # Accept `milliseconds`, `duration_ms`, or `timeout_ms` — the schema
+    # advertises both `milliseconds` and `duration_ms`, and the LLM picks
+    # whichever feels natural. If we only honoured `milliseconds`, every
+    # `duration_ms: 5000` call would silently fall through to the default
+    # 1000ms and the audit log would lie about the actual wait time.
+    ms = (
+        inp.get("milliseconds")
+        or inp.get("duration_ms")
+        or inp.get("timeout_ms")
+        or 1000
+    )
     await engine._exec("wait", str(ms), "--json")
     return ToolResult(output=f"Waited {ms}ms")
 

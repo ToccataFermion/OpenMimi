@@ -531,6 +531,48 @@ async def test_wait_handler_calls_wait_subcommand() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wait_handler_accepts_duration_ms_alias() -> None:
+    """Regression for cycle 25: ``browser_advanced.wait``'s schema advertises
+    both ``milliseconds`` and ``duration_ms``. The LLM picked ``duration_ms:
+    4000`` and ``duration_ms: 5000``; the handler silently fell back to the
+    1000ms default and the audit log claimed the requested wait had run.
+    Honor the documented alias."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+    result = await actions.get("wait")(_Engine(), {"duration_ms": 4000})
+    assert result.is_error is False
+    assert "Waited 4000ms" in result.output
+    assert captured == [("wait", "4000", "--json")]
+
+
+@pytest.mark.asyncio
+async def test_wait_handler_accepts_timeout_ms_alias() -> None:
+    """``timeout_ms`` is the more natural name for some prompts and shows up
+    in other wait handlers — accept it here too so the trio of names all
+    behave identically."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+    result = await actions.get("wait")(_Engine(), {"timeout_ms": 750})
+    assert result.is_error is False
+    assert "Waited 750ms" in result.output
+    assert captured == [("wait", "750", "--json")]
+
+
+@pytest.mark.asyncio
 async def test_wait_for_returns_immediately_when_box_present() -> None:
     """wait_for must exit on the first probe if get box returns a box."""
     from openmimi.tools import actions
