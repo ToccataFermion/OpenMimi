@@ -197,6 +197,15 @@ async def sampling_loop(
             flush=True,
         )
 
+        if plan is not None and plan.steps:
+            cur = plan.current()
+            if cur is not None:
+                _tool_progress(
+                    f"[plan] step {plan.current_step + 1}/{len(plan.steps)}: {cur.step}"
+                )
+            elif plan.is_complete():
+                _tool_progress("[plan] all steps complete")
+
         _dump_prompt(
             session_id=session_id,
             turn=_turn + 1,
@@ -438,6 +447,8 @@ async def sampling_loop(
                 # pending steps ahead, downgrade to continue + advance so the
                 # executor keeps going instead of aborting early.
                 has_pending_steps = plan.current_step < len(plan.steps) - 1
+                cur_step = plan.current()
+                step_name = cur_step.step if cur_step else "?"
                 if has_pending_steps:
                     _log.warning(
                         "verifier returned done but plan has pending steps (%d/%d); advancing",
@@ -445,17 +456,20 @@ async def sampling_loop(
                         len(plan.steps),
                     )
                     _tool_progress(
-                        f"[planner] verifier premature done at step {plan.current_step + 1}; advancing"
+                        f"[plan] step '{step_name}' looks finished — advancing to next step"
                     )
                     plan.advance()
                     continue
+                _tool_progress("[plan] all steps verified complete — finishing up")
                 _log.info("verifier reported plan complete; ending loop")
                 return messages
             if outcome == "replan":
                 # Stage 3 will hook the Planner here. For now just surface
                 # that the verifier asked for a replan so operators can
                 # see it in stderr / audit.
-                _tool_progress("[planner] verifier requested replan (stage 3 hook)")
+                _tool_progress(
+                    f"[plan] verifier flagged an issue with step {plan.current_step + 1} — trying a different approach"
+                )
 
     return messages
 
@@ -497,13 +511,17 @@ def _to_tool_result_block(tool_use_id: str, result: ToolResult) -> dict[str, Any
     if result.output:
         sub_content.append({"type": "text", "text": result.output})
     if result.base64_image:
+        media_type, data = _parse_data_uri(result.base64_image)
+        # Prefer the explicit field if present; fall back to parsed URI
+        if result.image_media_type:
+            media_type = result.image_media_type
         sub_content.append(
             {
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/png",
-                    "data": result.base64_image,
+                    "media_type": media_type,
+                    "data": data,
                 },
             }
         )
@@ -518,6 +536,19 @@ def _to_tool_result_block(tool_use_id: str, result: ToolResult) -> dict[str, Any
     if result.is_error:
         block["is_error"] = True
     return block
+
+
+def _parse_data_uri(value: str) -> tuple[str, str]:
+    """Extract (media_type, base64_data) from a data URI or plain base64 string.
+
+    Supports ``data:image/jpeg;base64,xxxxx`` and bare base64 strings.
+    """
+    if value.startswith("data:"):
+        header, _, data = value.partition(",")
+        # header looks like "data:image/jpeg;base64"
+        mt = header[5:].split(";")[0] if len(header) > 5 else "image/png"
+        return (mt or "image/png"), data
+    return "image/png", value
 
 
 def _make_error_result_block(tool_use_id: str, text: str) -> dict[str, Any]:
@@ -618,8 +649,9 @@ def _persist_screenshot_if_any(
 ) -> str | None:
     if not base64_image:
         return None
+    _, data = _parse_data_uri(base64_image)
     try:
-        png_bytes = base64.b64decode(base64_image, validate=False)
+        png_bytes = base64.b64decode(data, validate=False)
     except Exception:
         return None
     try:

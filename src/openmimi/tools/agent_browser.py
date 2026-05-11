@@ -244,10 +244,14 @@ class AgentBrowserTool(ToolBase):
         proxy: str | None = None,
         user_data_dir: str | None = None,
         screenshot_scale: float = 1.0,
+        screenshot_quality: int = 75,
+        screenshot_format: str = "jpeg",
         slow_mo_ms: int = 0,
     ) -> None:
         self._download_dir = Path(download_dir)
         self._screenshot_scale = max(0.1, min(1.0, float(screenshot_scale)))
+        self._screenshot_quality = max(1, min(95, int(screenshot_quality)))
+        self._screenshot_format = "jpeg" if screenshot_format.lower() in ("jpeg", "jpg") else "png"
         self._slow_mo_ms = max(0, int(slow_mo_ms))
         self._viewport = viewport
         self._headless = headless
@@ -621,14 +625,20 @@ class AgentBrowserTool(ToolBase):
             await self._refresh_tabs()
 
     async def _take_screenshot(self, path_override: str | None = None, annotate: bool = False) -> str | None:
-        raw = await self._take_screenshot_raw(path_override=path_override, annotate=annotate)
+        raw, media_type = await self._take_screenshot_raw(path_override=path_override, annotate=annotate)
         if raw is None:
             return None
-        return base64.b64encode(raw).decode("ascii")
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"data:{media_type};base64,{b64}"
 
-    async def _take_screenshot_raw(self, path_override: str | None = None, annotate: bool = False) -> bytes | None:
+    @property
+    def screenshot_media_type(self) -> str:
+        return "image/jpeg" if self._screenshot_format == "jpeg" else "image/png"
+
+    async def _take_screenshot_raw(self, path_override: str | None = None, annotate: bool = False) -> tuple[bytes | None, str]:
         if screenshots_disabled():
-            return None
+            return None, "image/png"
+        media_type = "image/png"
         try:
             path = Path(path_override) if path_override else _SCREENSHOT_DIR / f"ab_{int(time.time() * 1000)}.png"
             args = ["screenshot", str(path)]
@@ -640,25 +650,34 @@ class AgentBrowserTool(ToolBase):
             returned_path = data.get("path", str(path))
             if Path(returned_path).exists():
                 with open(returned_path, "rb") as f:
-                    png_bytes = f.read()
-                if self._screenshot_scale < 1.0:
+                    img_bytes = f.read()
+                # Scale + optionally convert to JPEG for smaller base64 payload
+                if self._screenshot_scale < 1.0 or self._screenshot_format == "jpeg":
                     try:
                         from PIL import Image
-                        img = Image.open(io.BytesIO(png_bytes))
-                        new_size = (
-                            max(1, int(img.width * self._screenshot_scale)),
-                            max(1, int(img.height * self._screenshot_scale)),
-                        )
-                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                        img = Image.open(io.BytesIO(img_bytes))
+                        if self._screenshot_scale < 1.0:
+                            new_size = (
+                                max(1, int(img.width * self._screenshot_scale)),
+                                max(1, int(img.height * self._screenshot_scale)),
+                            )
+                            img = img.resize(new_size, Image.Resampling.LANCZOS)
                         buf = io.BytesIO()
-                        img.save(buf, format="PNG", optimize=True)
-                        png_bytes = buf.getvalue()
+                        if self._screenshot_format == "jpeg":
+                            # Convert to RGB for JPEG (drop alpha)
+                            if img.mode in ("RGBA", "P"):
+                                img = img.convert("RGB")
+                            img.save(buf, format="JPEG", quality=self._screenshot_quality, optimize=True)
+                            media_type = "image/jpeg"
+                        else:
+                            img.save(buf, format="PNG", optimize=True)
+                        img_bytes = buf.getvalue()
                     except Exception:
                         pass
-                return png_bytes
+                return img_bytes, media_type
         except Exception:
             pass
-        return None
+        return None, media_type
 
     async def _exec(self, *args: str, timeout: float | None = None, _retries: int = 2) -> Any:
         """Run agent-browser CLI and return stdout/stderr.

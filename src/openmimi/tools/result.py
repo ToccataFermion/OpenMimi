@@ -16,3 +16,4 @@ class ToolResult:
     # re-parsing JSON they already constructed in the handler. Distinct from
     # ``details``, which carries metadata (error codes, hints) about the result.
     structured: dict[str, Any] | None = None
+    image_media_type: str = "image/png"

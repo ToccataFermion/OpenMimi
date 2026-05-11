@@ -14,14 +14,14 @@ from openmimi.cli import app
 runner = CliRunner()
 
 
-def test_run_no_screenshots_sets_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENMIMI_DISABLE_SCREENSHOTS", raising=False)
+def test_run_screenshots_sets_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENMIMI_ENABLE_SCREENSHOTS", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("openmimi.cli._maybe_load_dotenv", lambda: None)
 
-    result = runner.invoke(app, ["run", "--no-screenshots", "do something"])
+    result = runner.invoke(app, ["run", "--screenshots", "do something"])
     assert result.exit_code == 2
-    assert os.environ.get("OPENMIMI_DISABLE_SCREENSHOTS") == "1"
+    assert os.environ.get("OPENMIMI_ENABLE_SCREENSHOTS") == "1"
 
 
 def test_run_without_api_key_exits_with_error(

@@ -18,6 +18,9 @@ class BrowserConfig(BaseModel):
     viewport_width: int = 1280
     viewport_height: int = 800
     args: list[str] = Field(default_factory=list)
+    screenshot_scale: float = 0.5
+    screenshot_quality: int = 75
+    screenshot_format: str = "jpeg"
 
 
 class StorageConfig(BaseModel):
@@ -31,7 +34,7 @@ class AppConfig(BaseModel):
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     max_turns: int = 50
-    only_n_most_recent_images: int = 2
+    only_n_most_recent_images: int = 1
     max_context_turns: int = 10  # keep this many recent turns intact; truncate older tool results
     # Token-budget / smart compression (roadmap #5). `max_context_tokens` is
     # a soft cap on the total approx tokens fed to the LLM; the loop trims
@@ -45,3 +48,8 @@ class AppConfig(BaseModel):
     # Planner / Executor / Verifier triangle (roadmap #7). Stage 1 ships only
     # the data structures and a NullVerifier; flip this once stages 2-3 land.
     enable_planning: bool = False
+    # Screenshot token-saver: scale < 1.0 downsizes before base64 encoding.
+    # At 0.5 a 1280x800 browser viewport becomes 640x400 (~2 tiles vs ~6).
+    computer_screenshot_scale: float = 0.5
+    computer_screenshot_quality: int = 75
+    computer_screenshot_format: str = "jpeg"

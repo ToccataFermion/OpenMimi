@@ -220,6 +220,9 @@ class Orchestrator:
             headless=False,
             browser_args=browser_args,
             slow_mo_ms=slow_mo_ms,
+            screenshot_scale=cfg.browser.screenshot_scale,
+            screenshot_quality=cfg.browser.screenshot_quality,
+            screenshot_format=cfg.browser.screenshot_format,
         )
         # Register focused facade tools instead of the single god tool
         # to reduce per-request LLM context/token usage.
@@ -227,7 +230,12 @@ class Orchestrator:
         tools.register(BrowserInteractTool(browser_engine))
         tools.register(BrowserExtractTool(browser_engine))
         tools.register(BrowserAdvancedTool(browser_engine))
-        tools.register(ComputerTool(screen_dir=str(cfg.storage.screen_dir)))
+        tools.register(ComputerTool(
+            screen_dir=str(cfg.storage.screen_dir),
+            screenshot_scale=cfg.computer_screenshot_scale,
+            screenshot_quality=cfg.computer_screenshot_quality,
+            screenshot_format=cfg.computer_screenshot_format,
+        ))
         tools.register(ShellTool())
         tools.register(FileTool())
         tools.register(CodeTool())
@@ -321,6 +329,10 @@ class Orchestrator:
         domain = extract_domain(task)
 
         plan = await self._maybe_plan_task(task, domain)
+        if plan is not None and plan.steps:
+            print("\n[plan] Task breakdown:", file=sys.stderr, flush=True)
+            print(plan.format_progress(), file=sys.stderr, flush=True)
+            print(file=sys.stderr, flush=True)
         system = _build_system_prompt(domain, self.memory, plan)
         verifier = self._effective_verifier(plan)
 
@@ -410,6 +422,10 @@ class Orchestrator:
 
         domain = extract_domain(user_content)
         plan = await self._maybe_plan_task(user_content, domain)
+        if plan is not None and plan.steps:
+            print("\n[plan] Task breakdown:", file=sys.stderr, flush=True)
+            print(plan.format_progress(), file=sys.stderr, flush=True)
+            print(file=sys.stderr, flush=True)
         system = _build_system_prompt(domain, self.memory, plan)
         verifier = self._effective_verifier(plan)
 

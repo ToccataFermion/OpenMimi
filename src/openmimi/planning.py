@@ -92,6 +92,21 @@ class Plan:
     def is_complete(self) -> bool:
         return self.current_step >= len(self.steps)
 
+    def format_progress(self) -> str:
+        """Human-readable progress bar for terminal output.
+
+        Returns an empty string when there are no steps.
+        """
+        if not self.steps:
+            return ""
+        lines: list[str] = []
+        total = len(self.steps)
+        for i, s in enumerate(self.steps, 1):
+            marker = "[x]" if s.done else "[ ]"
+            emphasis = " → " if i - 1 == self.current_step and not s.done else "   "
+            lines.append(f"{emphasis}{marker} {i}. {s.step}")
+        return "\n".join(lines)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "steps": [s.to_dict() for s in self.steps],

@@ -34,22 +34,22 @@ _TOOL_DESCRIPTION = (
     "Action reference:\n"
     "- screenshot: capture the entire desktop\n"
     "- mouse_move x y [humanize=false] [steps=20] [delay_ms=10]: move cursor to (x, y). Set humanize=true for human-like Bezier trajectory with acceleration/deceleration.\n"
-    "- mouse_click [x y] [button=left|right] [wander=false]: click at coordinates or current position. Set wander=true for human-like micro-movements near target before clicking.\n"
+    "- mouse_click [x y] [button=left|right] [wander=false] [width] [height]: click at coordinates or current position. Set wander=true for human-like micro-movements near target before clicking. Provide width/height to randomise the hit point within the element bounds instead of the exact centre.\n"
     "- mouse_down [button=left|right]: press and hold mouse button at current position\n"
     "- mouse_up [button=left|right]: release mouse button at current position\n"
-    "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20] [delay_ms=10]: drag with bezier smoothing. "
+    "- mouse_drag start_x start_y end_x end_y [button=left|right] [steps=20] [delay_ms=10] [humanize=true]: drag with quadratic-Bezier smoothing and acceleration/deceleration. "
     "For slider CAPTCHAs use steps=80 and delay_ms=25 so the page JavaScript can track the movement.\n"
-    "- mouse_scroll amount [x y]: scroll wheel (positive = up, negative = down)\n"
-    "- mouse_double_click [x y] [button=left|right] [wander=false]: double-click at coordinates or current position. Set wander=true for human-like micro-movements before clicking.\n"
+    "- mouse_scroll amount [x y] [smooth=true]: scroll wheel (positive = up, negative = down). Large scrolls are broken into small random steps by default.\n"
+    "- mouse_double_click [x y] [button=left|right] [wander=false] [width] [height]: double-click at coordinates or current position. Set wander=true for human-like micro-movements before clicking. Provide width/height to randomise the hit point within the element bounds.\n"
     "- cursor_position: return current mouse cursor screen coordinates\n"
     "- focus_window title: bring the first window whose title contains 'title' to the foreground\n"
     "- key_press key: press a key (Enter, Escape, Tab, Control, Alt, Shift, etc.)\n"
     "- key_combo keys: press multiple keys simultaneously (e.g. ['Control','c']).\n"
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle\n"
-    "- locate template_path [confidence=0.8]: find template image on screen with OpenCV (returns center coords)\n"
-    "- click_image template_path [confidence=0.8] [button=left|right]: find template image on screen and click its center. "
-    "Useful for clicking icons, buttons, or UI elements in native apps when coordinates are unknown.\n"
+    "- locate template_path [confidence=0.8] [scales]: find template image on screen with multi-scale OpenCV matching (returns center coords). Searches 0.5x-1.5x by default; optionally pass a custom scales array.\n"
+    "- click_image template_path [confidence=0.8] [button=left|right]: find template image on screen and click a random point inside its bounds. "
+    "Uses multi-scale matching so slight UI zoom differences don't break the match. Useful for clicking icons, buttons, or UI elements in native apps when coordinates are unknown.\n"
     "- list_windows: enumerate all visible windows with titles and positions\n"
     "- clipboard clipboard_action=read|write [clipboard_text]: read or write system clipboard\n"
     "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
@@ -236,10 +236,18 @@ class ComputerTool(ToolBase):
 
     name = "computer"
 
-    def __init__(self, screen_dir: str | None = None, screenshot_scale: float = 1.0) -> None:
+    def __init__(
+        self,
+        screen_dir: str | None = None,
+        screenshot_scale: float = 1.0,
+        screenshot_quality: int = 75,
+        screenshot_format: str = "jpeg",
+    ) -> None:
         self._screen_dir = screen_dir or os.path.join("data", "screens")
         os.makedirs(self._screen_dir, exist_ok=True)
         self._screenshot_scale = max(0.1, min(1.0, float(screenshot_scale)))
+        self._screenshot_quality = max(1, min(95, int(screenshot_quality)))
+        self._screenshot_format = "jpeg" if screenshot_format.lower() in ("jpeg", "jpg") else "png"
         self._mss = None
 
     def _ensure_mss(self) -> Any:
@@ -311,6 +319,18 @@ class ComputerTool(ToolBase):
                         "type": "boolean",
                         "description": "For mouse_click / mouse_double_click: make small random micro-movements near target before clicking to simulate human aiming (default false).",
                     },
+                    "width": {
+                        "type": "integer",
+                        "description": "Element width in pixels. When provided with height, click is randomly offset within the element bounds instead of the exact center.",
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Element height in pixels. When provided with width, click is randomly offset within the element bounds instead of the exact center.",
+                    },
+                    "smooth": {
+                        "type": "boolean",
+                        "description": "For mouse_scroll: break large scrolls into smaller random steps to mimic human wheel use (default true).",
+                    },
                     "amount": {
                         "type": "integer",
                         "description": "Scroll amount in wheel clicks (positive = up, negative = down).",
@@ -362,7 +382,12 @@ class ComputerTool(ToolBase):
                     },
                     "confidence": {
                         "type": "number",
-                        "description": "Minimum confidence threshold for locate/click_image (0.0-1.0, default 0.8).",
+                        "description": "Minimum confidence threshold for locate/click_image (0.0-1.0, default 0.8). Multi-scale search is used automatically.",
+                    },
+                    "scales": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "Optional custom scale factors for locate/click_image template matching (default: 0.5 to 1.5 in 0.1 steps).",
                     },
                     "clipboard_action": {
                         "type": "string",
@@ -491,33 +516,44 @@ class ComputerTool(ToolBase):
         # derived from the screenshot map 1:1 to mouse_move/mouse_drag.
         raw = sct.grab(sct.monitors[1])
         import mss.tools
-        png_bytes = mss.tools.to_png(raw.rgb, raw.size)
+        img_bytes = mss.tools.to_png(raw.rgb, raw.size)
+        media_type = "image/png"
+        ext = "png"
 
-        # Optionally scale down to save LLM tokens
-        if self._screenshot_scale < 1.0:
+        # Scale and/or convert to JPEG to save LLM tokens and bandwidth
+        if self._screenshot_scale < 1.0 or self._screenshot_format == "jpeg":
             try:
                 from PIL import Image
-                img = Image.open(io.BytesIO(png_bytes))
-                new_size = (
-                    max(1, int(img.width * self._screenshot_scale)),
-                    max(1, int(img.height * self._screenshot_scale)),
-                )
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                img = Image.open(io.BytesIO(img_bytes))
+                if self._screenshot_scale < 1.0:
+                    new_size = (
+                        max(1, int(img.width * self._screenshot_scale)),
+                        max(1, int(img.height * self._screenshot_scale)),
+                    )
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
                 buf = io.BytesIO()
-                img.save(buf, format="PNG", optimize=True)
-                png_bytes = buf.getvalue()
+                if self._screenshot_format == "jpeg":
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(buf, format="JPEG", quality=self._screenshot_quality, optimize=True)
+                    media_type = "image/jpeg"
+                    ext = "jpg"
+                else:
+                    img.save(buf, format="PNG", optimize=True)
+                img_bytes = buf.getvalue()
             except Exception:
                 pass  # Fall back to original if PIL fails
 
-        b64 = base64.b64encode(png_bytes).decode("ascii")
+        b64 = base64.b64encode(img_bytes).decode("ascii")
         path = os.path.join(
-            self._screen_dir, f"screen_{int(time.time() * 1000)}.png"
+            self._screen_dir, f"screen_{int(time.time() * 1000)}.{ext}"
         )
         with open(path, "wb") as f:
-            f.write(png_bytes)
+            f.write(img_bytes)
         return ToolResult(
             output=f"Screenshot saved to {path} ({raw.width}x{raw.height})",
-            base64_image=b64,
+            base64_image=f"data:{media_type};base64,{b64}",
+            image_media_type=media_type,
         )
 
     async def _do_mouse_move(self, inp: dict[str, Any]) -> ToolResult:
@@ -546,23 +582,47 @@ class ComputerTool(ToolBase):
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
         return ToolResult(output=f"Mouse moved to ({x}, {y})")
 
+    def _jittered_click_coords(
+        self, cx: int, cy: int, width: int = 0, height: int = 0, max_offset: int = 5
+    ) -> tuple[int, int]:
+        """Return a click point randomly offset from center within the element bounds.
+
+        If width/height are known, the offset is constrained so the point stays
+        inside the bounding box (with a 2-px margin).  Otherwise a small
+        ±max_offset gaussian jitter is applied.
+        """
+        import random
+        if width > 4 and height > 4:
+            margin = 2
+            half_w = width // 2 - margin
+            half_h = height // 2 - margin
+            ox = random.randint(-max(1, half_w), max(1, half_w))
+            oy = random.randint(-max(1, half_h), max(1, half_h))
+            return cx + ox, cy + oy
+        ox = int(random.gauss(0, max_offset / 2))
+        oy = int(random.gauss(0, max_offset / 2))
+        return cx + ox, cy + oy
+
     async def _do_mouse_click(self, inp: dict[str, Any]) -> ToolResult:
         import random
         x = inp.get("x")
         y = inp.get("y")
         button = inp.get("button", "left")
         wander = inp.get("wander", False)
+        width = int(inp.get("width", 0))
+        height = int(inp.get("height", 0))
         # Move first if coordinates provided
         if x is not None and y is not None:
-            await self._do_mouse_move({"x": x, "y": y})
+            tx, ty = self._jittered_click_coords(x, y, width, height)
+            await self._do_mouse_move({"x": tx, "y": ty})
             time.sleep(0.05)
             if wander:
                 for _ in range(random.randint(2, 4)):
-                    wx = x + random.randint(-8, 8)
-                    wy = y + random.randint(-8, 8)
+                    wx = tx + random.randint(-8, 8)
+                    wy = ty + random.randint(-8, 8)
                     await self._do_mouse_move({"x": wx, "y": wy})
                     time.sleep(random.uniform(0.03, 0.12))
-                await self._do_mouse_move({"x": x, "y": y})
+                await self._do_mouse_move({"x": tx, "y": ty})
                 time.sleep(random.uniform(0.05, 0.15))
         down_flag, up_flag = {
             "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
@@ -607,41 +667,59 @@ class ComputerTool(ToolBase):
     def _generate_human_trajectory(
         self, start_x: int, start_y: int, end_x: int, end_y: int, steps: int, delay_ms: int
     ) -> list[tuple[int, int]]:
-        """Generate a human-like mouse trajectory with acceleration/deceleration."""
+        """Generate a human-like quadratic-Bezier trajectory with acceleration/deceleration.
+
+        Uses a control point offset perpendicular to the straight-line path so the
+        cursor arcs slightly (mimicking arm kinematics).  Velocity ramps up for
+        ~80 % of the distance then decelerates, with random micro-jitter and
+        occasional hesitations.
+        """
         import random
-        distance = ((end_x - start_x) ** 2 + (end_y - start_y) ** 2) ** 0.5
+        import math
+
+        dx = end_x - start_x
+        dy = end_y - start_y
+        distance = math.hypot(dx, dy)
         if distance < 1:
             return [(end_x, end_y)]
 
+        # Perpendicular offset for the control point (arc direction)
+        # Offset magnitude is 5-15 % of distance, capped at 80 px
+        offset_mag = min(80, distance * random.uniform(0.05, 0.15))
+        # Randomly choose left or right of the straight path
+        side = 1 if random.random() < 0.5 else -1
+        # Perpendicular unit vector (-dy, dx) / distance
+        perp_x = -dy / distance * offset_mag * side
+        perp_y = dx / distance * offset_mag * side
+        ctrl_x = (start_x + end_x) / 2 + perp_x
+        ctrl_y = (start_y + end_y) / 2 + perp_y
+
+        # Adaptive step count: short moves don't need many points
+        steps = max(3, min(steps, int(distance / 3) + 3))
+
         track: list[tuple[int, int]] = []
-        current_dist = 0.0
-        mid = distance * 0.8
-        t_step = 0.2
-        velocity = 0.0
+        # Velocity profile: accelerate for 0-0.7, cruise 0.7-0.85, decelerate 0.85-1.0
+        for i in range(steps + 1):
+            t = i / steps
+            # Ease-in-out cubic: starts slow, accelerates, decelerates at end
+            t_eased = t * t * (3 - 2 * t)
+            # Quadratic Bezier
+            bx = int((1 - t_eased) ** 2 * start_x + 2 * (1 - t_eased) * t_eased * ctrl_x + t_eased ** 2 * end_x)
+            by = int((1 - t_eased) ** 2 * start_y + 2 * (1 - t_eased) * t_eased * ctrl_y + t_eased ** 2 * end_y)
+            # Micro-jitter perpendicular to path
+            jitter = random.randint(-1, 1)
+            jx = int(bx + jitter * perp_x / offset_mag) if offset_mag > 0 else bx
+            jy = int(by + jitter * perp_y / offset_mag) if offset_mag > 0 else by
+            track.append((jx, jy))
 
-        while current_dist < distance:
-            if current_dist < mid:
-                accel = random.uniform(1.5, 2.5)
-            else:
-                accel = random.uniform(-2.5, -1.5)
-            v0 = velocity
-            velocity = max(0.0, v0 + accel * t_step)
-            move = v0 * t_step + 0.5 * accel * t_step * t_step
-            move = max(0.5, move + random.uniform(-0.5, 0.5))
-            current_dist += move
-            ratio = min(1.0, current_dist / distance)
-            bx = int(start_x + (end_x - start_x) * ratio)
-            by = int(start_y + (end_y - start_y) * ratio)
-            jitter_y = random.randint(-2, 2)
-            track.append((bx, by + jitter_y))
-
-        if not track or track[-1] != (end_x, end_y):
-            track.append((end_x, end_y))
-
-        deduped = [track[0]]
+        # Deduplicate consecutive identical points
+        deduped: list[tuple[int, int]] = [track[0]]
         for pt in track[1:]:
             if pt != deduped[-1]:
                 deduped.append(pt)
+
+        if not deduped or deduped[-1] != (end_x, end_y):
+            deduped.append((end_x, end_y))
         return deduped
 
     async def _execute_human_movement(
@@ -706,16 +784,19 @@ class ComputerTool(ToolBase):
         y = inp.get("y")
         button = inp.get("button", "left")
         wander = inp.get("wander", False)
+        width = int(inp.get("width", 0))
+        height = int(inp.get("height", 0))
         if x is not None and y is not None:
-            await self._do_mouse_move({"x": x, "y": y})
+            tx, ty = self._jittered_click_coords(x, y, width, height)
+            await self._do_mouse_move({"x": tx, "y": ty})
             time.sleep(0.05)
             if wander:
                 for _ in range(random.randint(2, 4)):
-                    wx = x + random.randint(-8, 8)
-                    wy = y + random.randint(-8, 8)
+                    wx = tx + random.randint(-8, 8)
+                    wy = ty + random.randint(-8, 8)
                     await self._do_mouse_move({"x": wx, "y": wy})
                     time.sleep(random.uniform(0.03, 0.12))
-                await self._do_mouse_move({"x": x, "y": y})
+                await self._do_mouse_move({"x": tx, "y": ty})
                 time.sleep(random.uniform(0.05, 0.15))
         down_flag, up_flag = {
             "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
@@ -785,10 +866,61 @@ class ComputerTool(ToolBase):
         time.sleep(ms / 1000.0)
         return ToolResult(output=f"Waited {ms}ms")
 
+    def _match_template_multiscale(
+        self,
+        screen: Any,
+        template: Any,
+        confidence: float,
+        scales: list[float] | None = None,
+    ) -> dict[str, Any] | None:
+        """Multi-scale template matching with a Gaussian-pyramid-like search.
+
+        Searches across 0.5x-1.5x template scales (customisable via ``scales``)
+        so that slight UI zoom / DPI differences don't break a match.
+        Returns the best match dict or None if nothing exceeds ``confidence``.
+        """
+        import cv2
+        import numpy as np
+
+        if scales is None:
+            scales = [round(s, 2) for s in np.arange(0.5, 1.55, 0.1)]
+
+        best_match = None
+        best_val = -1.0
+
+        for scale in scales:
+            if scale <= 0:
+                continue
+            resized = cv2.resize(template, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+            th, tw = resized.shape[:2]
+            sh, sw = screen.shape[:2]
+            if th > sh or tw > sw:
+                continue
+            result = cv2.matchTemplate(screen, resized, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            if max_val > best_val:
+                best_val = max_val
+                best_match = {
+                    "x": max_loc[0] + tw // 2,
+                    "y": max_loc[1] + th // 2,
+                    "confidence": max_val,
+                    "width": tw,
+                    "height": th,
+                    "scale": scale,
+                }
+
+        if best_match and best_match["confidence"] >= confidence:
+            return best_match
+        return None
+
     async def _do_locate(self, inp: dict[str, Any]) -> ToolResult:
-        """Find a template image on the screen using OpenCV template matching."""
+        """Find a template image on the screen using multi-scale OpenCV template matching."""
         template_path = str(inp.get("template_path", ""))
         confidence = float(inp.get("confidence", 0.8))
+        scales_raw = inp.get("scales")
+        scales = None
+        if isinstance(scales_raw, list) and scales_raw:
+            scales = [float(s) for s in scales_raw if isinstance(s, (int, float)) and float(s) > 0]
         if not template_path:
             return ToolResult(output="locate requires 'template_path'", is_error=True)
         try:
@@ -810,18 +942,14 @@ class ComputerTool(ToolBase):
             if template is None:
                 return ToolResult(output=f"Failed to load template: {template_path}", is_error=True)
 
-            result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-            if max_val >= confidence:
-                h, w = template.shape[:2]
-                cx = max_loc[0] + w // 2
-                cy = max_loc[1] + h // 2
+            match = self._match_template_multiscale(screen, template, confidence, scales=scales)
+            if match is not None:
                 return ToolResult(
-                    output=f"Found at ({cx}, {cy}) with confidence {max_val:.3f}",
-                    details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h},
+                    output=f"Found at ({match['x']}, {match['y']}) with confidence {match['confidence']:.3f} (scale={match['scale']})",
+                    details=match,
                 )
             return ToolResult(
-                output=f"Template not found (best confidence: {max_val:.3f}, threshold: {confidence})",
+                output=f"Template not found across scales 0.5x-1.5x (best confidence below {confidence})",
                 is_error=True,
             )
         except Exception as exc:
@@ -832,6 +960,10 @@ class ComputerTool(ToolBase):
         template_path = str(inp.get("template_path", ""))
         confidence = float(inp.get("confidence", 0.8))
         button = str(inp.get("button", "left")).lower()
+        scales_raw = inp.get("scales")
+        scales = None
+        if isinstance(scales_raw, list) and scales_raw:
+            scales = [float(s) for s in scales_raw if isinstance(s, (int, float)) and float(s) > 0]
         if not template_path:
             return ToolResult(output="click_image requires 'template_path'", is_error=True)
         try:
@@ -852,17 +984,17 @@ class ComputerTool(ToolBase):
             if template is None:
                 return ToolResult(output=f"Failed to load template: {template_path}", is_error=True)
 
-            result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-            if max_val < confidence:
+            match = self._match_template_multiscale(screen, template, confidence, scales=scales)
+            if match is None:
                 return ToolResult(
-                    output=f"Template not found (best confidence: {max_val:.3f}, threshold: {confidence})",
+                    output=f"Template not found across scales 0.5x-1.5x (threshold: {confidence})",
                     is_error=True,
                 )
-            h, w = template.shape[:2]
-            cx = max_loc[0] + w // 2
-            cy = max_loc[1] + h // 2
-            await self._do_mouse_move({"x": cx, "y": cy})
+
+            cx = match["x"]
+            cy = match["y"]
+            tx, ty = self._jittered_click_coords(cx, cy, match.get("width", 0), match.get("height", 0))
+            await self._do_mouse_move({"x": tx, "y": ty})
             time.sleep(0.05)
             down_flag, up_flag = {
                 "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
@@ -873,8 +1005,8 @@ class ComputerTool(ToolBase):
             time.sleep(0.05)
             self._send_mouse_event(up_flag)
             return ToolResult(
-                output=f"Clicked template at ({cx}, {cy}) with confidence {max_val:.3f}",
-                details={"x": cx, "y": cy, "confidence": max_val, "width": w, "height": h},
+                output=f"Clicked template at ({tx}, {ty}) with confidence {match['confidence']:.3f} (scale={match['scale']})",
+                details={**match, "click_x": tx, "click_y": ty},
             )
         except Exception as exc:
             return ToolResult(output=f"click_image error: {exc}", is_error=True)
@@ -1042,23 +1174,49 @@ class ComputerTool(ToolBase):
             return ToolResult(output=f"File operation failed: {exc}", is_error=True)
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
-        amount = inp.get("amount", 0)
+        import random
+        amount = int(inp.get("amount", 0))
         x = inp.get("x")
         y = inp.get("y")
+        smooth = inp.get("smooth", True)
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})
             time.sleep(0.05)
+        if amount == 0:
+            return ToolResult(output="Mouse scrolled 0")
+
         # WHEEL_DELTA is 120 per click
-        delta = int(amount * 120)
-        inp_struct = _INPUT()
-        inp_struct.type = INPUT_MOUSE
-        inp_struct.mi.dx = 0
-        inp_struct.mi.dy = 0
-        inp_struct.mi.mouseData = delta
-        inp_struct.mi.dwFlags = MOUSEEVENTF_WHEEL
-        inp_struct.mi.time = 0
-        inp_struct.mi.dwExtraInfo = 0
-        ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
+        if smooth and abs(amount) > 3:
+            # Break large scrolls into smaller random steps to mimic human wheel use
+            remaining = amount
+            step_sign = 1 if amount > 0 else -1
+            while remaining != 0:
+                step = random.randint(1, 3) * step_sign
+                if abs(step) > abs(remaining):
+                    step = remaining
+                delta = int(step * 120)
+                inp_struct = _INPUT()
+                inp_struct.type = INPUT_MOUSE
+                inp_struct.mi.dx = 0
+                inp_struct.mi.dy = 0
+                inp_struct.mi.mouseData = delta
+                inp_struct.mi.dwFlags = MOUSEEVENTF_WHEEL
+                inp_struct.mi.time = 0
+                inp_struct.mi.dwExtraInfo = 0
+                ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
+                remaining -= step
+                time.sleep(random.uniform(0.05, 0.15))
+        else:
+            delta = int(amount * 120)
+            inp_struct = _INPUT()
+            inp_struct.type = INPUT_MOUSE
+            inp_struct.mi.dx = 0
+            inp_struct.mi.dy = 0
+            inp_struct.mi.mouseData = delta
+            inp_struct.mi.dwFlags = MOUSEEVENTF_WHEEL
+            inp_struct.mi.time = 0
+            inp_struct.mi.dwExtraInfo = 0
+            ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
         return ToolResult(output=f"Mouse scrolled {amount}")
 
     async def _do_key_press(self, inp: dict[str, Any]) -> ToolResult:
@@ -1149,7 +1307,7 @@ class ComputerTool(ToolBase):
             return ToolResult(output=f"get_screen_info failed: {exc}", is_error=True)
 
     async def _do_ocr(self, inp: dict[str, Any]) -> ToolResult:
-        """Extract text from a screen region using Tesseract OCR."""
+        """Extract text from a screen region using Tesseract OCR with per-word confidence."""
         try:
             import pytesseract
             from PIL import Image
@@ -1186,11 +1344,32 @@ class ComputerTool(ToolBase):
             # Tesseract expects RGB
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            text = pytesseract.image_to_string(img, lang=language)
+
+            # Use image_to_data for per-word confidence
+            data = pytesseract.image_to_data(img, lang=language, output_type=pytesseract.Output.DICT)
+            words: list[str] = []
+            confidences: list[int] = []
+            for i, text in enumerate(data["text"]):
+                word = str(text).strip()
+                if not word:
+                    continue
+                conf = int(data["conf"][i]) if str(data["conf"][i]).lstrip("-").isdigit() else -1
+                words.append(word)
+                confidences.append(conf)
+
+            full_text = " ".join(words)
+            avg_conf = sum(c for c in confidences if c >= 0) / max(1, len([c for c in confidences if c >= 0]))
+
             return ToolResult(
-                output=f"OCR result ({region['width']}x{region['height']} @{region['left']},{region['top']}):\n{text[:2000]}",
+                output=(
+                    f"OCR result ({region['width']}x{region['height']} @{region['left']},{region['top']}) "
+                    f"avg_conf={avg_conf:.1f}:\n{full_text[:2000]}"
+                ),
                 details={
-                    "text": text,
+                    "text": full_text,
+                    "words": words,
+                    "confidences": confidences,
+                    "avg_confidence": avg_conf,
                     "region": region,
                     "language": language,
                 },
@@ -1229,6 +1408,7 @@ class ComputerTool(ToolBase):
             data = pytesseract.image_to_data(img, lang=language, output_type=pytesseract.Output.DICT)
             best_match = None
             best_score = -1
+            best_conf = -1
             target_lower = target.lower()
             n_boxes = len(data["text"])
             for i in range(n_boxes):
@@ -1245,24 +1425,28 @@ class ComputerTool(ToolBase):
                     score = 1
                 else:
                     continue
-                if score > best_score:
+                conf = int(data["conf"][i]) if str(data["conf"][i]).lstrip("-").isdigit() else -1
+                # Tie-break by confidence
+                if score > best_score or (score == best_score and conf > best_conf):
                     best_score = score
+                    best_conf = conf
                     x = int(data["left"][i])
                     y = int(data["top"][i])
                     w = int(data["width"][i])
                     h = int(data["height"][i])
-                    best_match = (x + w // 2, y + h // 2, text)
+                    best_match = (x + w // 2, y + h // 2, text, conf, w, h)
 
             if best_match is None:
-                image = await self._take_screenshot()
+                screenshot_result = await self._do_screenshot({})
                 return ToolResult(
                     output=f"click_text: could not find '{target}' on screen",
                     is_error=True,
-                    base64_image=image,
+                    base64_image=screenshot_result.base64_image,
                 )
 
-            cx, cy, matched_text = best_match
-            await self._do_mouse_move({"x": cx, "y": cy})
+            cx, cy, matched_text, conf, tw, th = best_match
+            tx, ty = self._jittered_click_coords(cx, cy, tw, th)
+            await self._do_mouse_move({"x": tx, "y": ty})
             time.sleep(0.05)
             down_flag, up_flag = {
                 "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
@@ -1273,11 +1457,11 @@ class ComputerTool(ToolBase):
             time.sleep(0.05)
             self._send_mouse_event(up_flag)
             time.sleep(0.1)
-            image = await self._take_screenshot()
+            screenshot_result = await self._do_screenshot({})
             return ToolResult(
-                output=f"Clicked on text '{matched_text}' at ({cx}, {cy}) with {button} button",
-                base64_image=image,
-                details={"matched_text": matched_text, "x": cx, "y": cy},
+                output=f"Clicked on text '{matched_text}' at ({tx}, {ty}) with {button} button (ocr_conf={conf})",
+                base64_image=screenshot_result.base64_image,
+                details={"matched_text": matched_text, "x": tx, "y": ty, "ocr_confidence": conf},
             )
         except Exception as exc:
             return ToolResult(output=f"click_text failed: {exc}", is_error=True)
