@@ -137,7 +137,7 @@ async def wait_for_navigation(
 ) -> ToolResult:
     """Wait for the page URL to change, indicating navigation has occurred."""
     expected_url = inp.get("expected_url", "")
-    timeout_ms = inp.get("timeout_ms", 10000)
+    timeout_ms = inp.get("timeout_ms") or inp.get("milliseconds") or 10000
     interval_ms = inp.get("interval_ms", 500)
     try:
         result = await engine._exec("eval", "(() => window.location.href)()", "--json")

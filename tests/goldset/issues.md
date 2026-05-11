@@ -22,6 +22,33 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 1 — task `search_duckduckgo`
+**Symptom:** step 7 `browser_navigate {"action":"wait_for_navigation","milliseconds":15000}`
+timed out after **10000ms** despite the LLM asking for 15000ms.
+**Audit:** data/audit/545114a81ca04df099d8aa0b42c06dcb.jsonl
+**Root cause:** `actions/wait.py::wait_for_navigation` only read
+`inp.get("timeout_ms", 10000)` — the `milliseconds` key was silently
+dropped and the default 10s was used. Schema for `timeout_ms` only
+mentioned `wait_for` and `wait_for_network_idle`, omitting
+`wait_for_navigation`, so the LLM had no clear name to use and picked
+`milliseconds` (the natural shorthand). The audit log was indistinguishable
+from a genuine "page actually didn't navigate" timeout, which is the worst
+kind of silent failure.
+**Fix:** commit pending — handler now accepts `timeout_ms` OR `milliseconds`
+(`timeout_ms` wins if both present); schema description for `timeout_ms`
+now lists wait_for_navigation explicitly and notes the `milliseconds`
+fallback so the LLM picks the canonical name next time.
+**Tests:** `tests/unit/test_actions_registry.py::test_wait_for_navigation_accepts_milliseconds_alias`
+— stuck-URL fake engine, asserts handler bails in <1.5s with `milliseconds=200`
+(would take 10s if alias were still ignored).
+**Side observation (no fix):** step 3 `fill` on `ref: e172` failed with
+"Unknown ref" because the agent had just called `click` on the same ref
+without re-snapshotting. agent-browser refs are tied to snapshot generations;
+this is an LLM-reasoning miss, not a tool bug. Agent recovered via a fresh
+snapshot at step 4 and completed the task.
+
+---
+
 ## 2026-05-11 cycle 0 — task `nav_wikipedia`
 **Symptom:** `mimi run "<task>"` printed the chat welcome banner, hit stdin
 EOF, exited 0, and produced no audit log. Cron captured the welcome screen

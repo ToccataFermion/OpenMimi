@@ -297,7 +297,7 @@ def build_input_schema() -> dict[str, Any]:
             },
             "timeout_ms": {
                 "type": "integer",
-                "description": "Timeout in milliseconds for wait_for and wait_for_network_idle (default 10000).",
+                "description": "Timeout in milliseconds for wait_for, wait_for_disappear, wait_for_navigation, and wait_for_network_idle (default 10000). For wait_for_navigation, 'milliseconds' is also accepted as a fallback name.",
             },
             "interval_ms": {
                 "type": "integer",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -611,6 +612,40 @@ async def test_wait_for_navigation_detects_url_change() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wait_for_navigation_accepts_milliseconds_alias() -> None:
+    """Regression: goldset cycle 1 caught the LLM sending ``milliseconds`` instead of
+    ``timeout_ms`` for wait_for_navigation. The handler silently fell back to the 10s
+    default and the actual requested timeout was ignored. The alias must now be honored.
+    """
+    from openmimi.tools import actions
+
+    counter = {"i": 0}
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            counter["i"] += 1
+            return SimpleNamespace(stdout="")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": "https://stuck.example/"}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    start = time.monotonic()
+    result = await actions.get("wait_for_navigation")(
+        _Engine(), {"milliseconds": 200, "interval_ms": 50}
+    )
+    elapsed_ms = (time.monotonic() - start) * 1000
+    assert result.is_error is True
+    assert "200ms" in result.output
+    assert elapsed_ms < 1500, (
+        f"wait_for_navigation honored milliseconds=200 → should bail in well "
+        f"under 1.5s, took {elapsed_ms:.0f}ms (likely ignored alias and used default 10s)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_wait_for_network_idle_installs_hook_and_returns_when_idle() -> None:
     """First eval is the install JS; subsequent polls return idle=True immediately."""
     from openmimi.tools import actions
@@ -1135,6 +1170,25 @@ async def test_eval_rejects_empty_js() -> None:
 
 
 @pytest.mark.asyncio
+async def test_eval_accepts_js_code_as_alias_for_js() -> None:
+    """browser_extract's schema historically declared 'js_code'; the backend
+    only read 'js' and rejected everything LLMs sent (92% failure rate in
+    the 2026-05-11 audit). Accept both so old/new schemas coexist."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *_args: str, **_kw: Any) -> Any:
+            return SimpleNamespace(stdout='{"success":true,"data":{"result":"ok"}}')
+
+        def _parse_json(self, _raw: str) -> dict[str, Any]:
+            return {"success": True, "data": {"result": "ok"}}
+
+    # Only js_code provided — must succeed via fallback.
+    result = await actions.get("eval")(_Engine(), {"js_code": "return 'ok';"})
+    assert result.is_error is False, result.output
+
+
+@pytest.mark.asyncio
 async def test_eval_returns_serialised_result_value() -> None:
     """eval must surface data.result as a JSON string when present."""
     from openmimi.tools import actions
@@ -1160,7 +1214,94 @@ async def test_batch_requires_steps() -> None:
         pass
 
     result = await actions.get("batch")(_Engine(), {})
+    assert result.is_error is True
     assert "steps" in result.output
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_non_string_step() -> None:
+    """A dict step would be silently corrupted by argv quoting — fail fast instead."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("batch")(
+        _Engine(), {"steps": ["mouse move 1 2", {"command": "click"}]}
+    )
+    assert result.is_error is True
+    assert "step 1" in result.output
+    assert "non-empty string" in result.output
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_blank_step() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("batch")(_Engine(), {"steps": ["click @e1", "   "]})
+    assert result.is_error is True
+    assert "step 1" in result.output
+
+
+@pytest.mark.asyncio
+async def test_batch_accepts_token_array_step() -> None:
+    """Tolerate token arrays — agent-browser's stdin JSON shape — by joining."""
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="[]")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("batch")(
+        _Engine(),
+        {"steps": [["mouse", "move", "100", "200"], "mouse down"]},
+    )
+    assert result.is_error is False
+    # Token array joined into a single argv string, then forwarded with --bail/--json.
+    assert captured == [(
+        "batch", "--bail", "--json",
+        "mouse move 100 200", "mouse down",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_batch_forwards_string_steps_to_exec() -> None:
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="[]")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {}
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("batch")(
+        _Engine(),
+        {"steps": ["mouse move 5 5", "mouse down", "mouse up"]},
+    )
+    assert result.is_error is False
+    assert captured == [(
+        "batch", "--bail", "--json",
+        "mouse move 5 5", "mouse down", "mouse up",
+    )]
 
 
 @pytest.mark.asyncio
