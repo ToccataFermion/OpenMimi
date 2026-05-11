@@ -22,6 +22,29 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 22 — task `xft_after_login`
+**Symptom:** Task expected the persistent profile to already be logged
+in; agent navigated to xft.cmbchina.com and found the public login form
+instead. Agent correctly diagnosed "profile did NOT retain an active
+login session" and returned an honest "cannot proceed" report after 13
+steps / 29 LLM turns.
+**Audit:** data/audit/45db2e288b33423faad7ef9097afc18b.jsonl
+**Root cause:** Chain dependency on task[7] `xft_fresh_login` (cycle 15)
+succeeding: cycle 15 cleared cookies then failed to solve the slider
+CAPTCHA, leaving the profile permanently logged-out. Every subsequent
+`xft_after_login` will fall through to "no session" until something
+re-establishes the login. No code bug — purely an environmental drift
+problem on the test fixture.
+**Fix:** none — would require the LLM to actually solve the slider
+CAPTCHA in cycle 15 (LLM-reasoning), or a session-file restore step
+prepended to the task prompt (would change task identity, README
+forbids without good reason).
+**Tests:** n/a.
+**Notes:** Step 4 `memory_read sites/xft.cmbchina.com.md` returned
+TARGET_NOT_FOUND (file is `.json` not `.md`); agent self-recovered at
+step 7. Minor LLM file-extension miss, not worth a fix. The 12 stale
+tabs from prior cycles still recur as background noise.
+
 ## 2026-05-12 cycle 19 — task `tabs_example`
 **Symptom:** Task succeeded but burned 13 tool steps / 29 LLM turns for
 what should be 4 calls. Agent opened the 3 tabs, then
