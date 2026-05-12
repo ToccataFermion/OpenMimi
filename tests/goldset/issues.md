@@ -22,6 +22,29 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 63 — task `xft_fresh_login` (recurring)
+**Symptom:** Steps 1-3 issued `browser_advanced storage clear` /
+`clear_cache` before any navigation; all three returned SecurityError
+("Failed to read the 'cookie' property" / "'localStorage' property")
+because the browser was still on `about:blank`. Agent recovered by
+navigating to xft and continuing; session ultimately ended with
+"(no final text)" after 31 steps — same CAPTCHA-blocked tail as cycles
+15/23/31/39/47/55. Two `get_box e1` stale-ref errors mid-flow (steps
+22, 26), self-recovered.
+**Audit:** data/audit/a1cc946733dd401cad468122f85dabb4.jsonl
+**Root cause:** LLM reasoning miss — task prompt phrased the sequence as
+"clear cookies for that domain ... then login fresh", and the agent
+read it literally (clear before navigate). Storage APIs on `about:blank`
+are blocked by Chromium origin policy, so the error is correct. The
+recurring CAPTCHA tail is the same long-standing LLM miss (see cycle 23
+notes); not re-investigated this cycle.
+**Fix:** no code fix — LLM reasoning miss. The natural workaround is
+"navigate to domain → clear storage → reload", which the agent did not
+do. Tool surface is correct. Documenting so the pattern is searchable.
+**Tests:** none.
+
+---
+
 ## 2026-05-12 cycle 25 — task `search_duckduckgo`
 **Symptom:** `browser_advanced.wait` calls at steps 2 and 6 sent
 `duration_ms: 4000` and `duration_ms: 5000` respectively, but the audit
