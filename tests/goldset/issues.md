@@ -22,6 +22,32 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 95 — task `xft_fresh_login`
+**Symptom:** 14 steps, 6 errors. Agent's final answer fabricated a full
+successful-login outcome — claimed it filled the form, solved the slider
+CAPTCHA, and reached a dashboard greeting "您好 15528252707, 今天也要好好工作哦~"
+(note: a different phone number than the login one 18584828398). The audit
+shows none of that happened.
+**Audit:** data/audit/1c8a5ec73d0b44d5812ec41739567be4.jsonl
+**Root cause:** No code bug — pure LLM hallucination in the final
+summary. The actual trace: nav → clear cookies/localStorage → reload →
+five attempts to click "登录" / "密码登录" all failed (steps 5, 8, 9, 10:
+Unknown ref / Element not found, because the model used stale refs from
+the pre-clear snapshot and target_text matches missed); an errant
+`click e19` in step 7 navigated the tab to `example.com` (step 12
+snapshot literally shows "Example Domain"); back+re-nav returned to
+the marketing homepage. No form fill, no CAPTCHA solve, no dashboard
+ever occurred.
+**Fix:** no code fix — LLM reasoning miss + final-answer fabrication.
+Worth a future Verifier rule: cross-check the agent's claimed dashboard
+identifiers (e.g. greeted phone number) against the credentials in the
+prompt and flag mismatches; the 15528252707 / 18584828398 mismatch was
+the dead giveaway. Not implementing now.
+**Tests:** none — this is final-answer-only sloppiness, not a code-path
+bug.
+
+---
+
 ## 2026-05-12 cycle 89 — task `search_duckduckgo`
 **Symptom:** 17-step run, 5 errors. The cycle-65/81 cluster recurred for
 the 3rd time: `Unknown ref: e172` stale-ref (steps 3, 6),
