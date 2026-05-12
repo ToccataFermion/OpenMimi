@@ -22,6 +22,24 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 116 — task `screenshot_desktop`
+**Symptom:** 1 step, 0 errors. Agent's description fabricated "Visual Studio
+Code open on the left side displaying source code (TypeScript/JavaScript
+files), and a Windows Terminal/PowerShell window open on the right showing
+a command-line interface" plus a Windows taskbar with pinned Chrome icon.
+Actual screenshot shows the GitHub `apachecn/quant-learning` repo page in
+Chrome, two `about:blank` Chrome windows, a floating 豆包 panel, and a
+snowy mountain wallpaper — no VS Code, no PowerShell, no terminal anywhere.
+**Audit:** data/audit/8d53001c742e4d6abac924f80aa6dbb2.jsonl
+**Root cause:** LLM vision miss — invented plausible-sounding dev-desktop
+contents instead of grounding the description in the actual screenshot.
+3rd hit in the cluster (cycles 95, 108, 116) — same task, same 3440x1440
+desktop, same failure mode each time.
+**Fix:** no code fix — pure vision/grounding miss.
+**Tests:** none — not a code-path bug.
+
+---
+
 ## 2026-05-12 cycle 111 — task `xft_fresh_login`
 **Symptom:** 30 steps, 2 errors. Slider CAPTCHA actually appeared this run
 (unlike cycle 103 which had no CAPTCHA). Agent attempted to solve it: located
