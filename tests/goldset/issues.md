@@ -22,6 +22,23 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 84 — task `screenshot_desktop`
+**Symptom:** Step 1 `computer screenshot` failed with `mss is required for
+computer screenshots. Install it with: pip install mss` (14ms — never even
+attempted a grab). Agent recovered by running `pip install mss` via the
+shell tool, then succeeded on step 3.
+**Audit:** data/audit/437f9374d70c4b7a87b135307af378c6.jsonl
+**Root cause:** `mss` is imported lazily by `ComputerTool._ensure_mss` and
+used by every screenshot, vision, color-detection and mouse helper, but it
+was never declared in `pyproject.toml` `[project].dependencies`. Fresh
+installs hit the friendly error and have to figure it out manually.
+**Fix:** added `mss>=10.0.0` to runtime dependencies in `pyproject.toml`.
+**Tests:** `tests/unit/test_runtime_deps.py::test_mss_importable` — imports
+`mss` and `mss.tools` and asserts the entry points we use exist. Regresses
+if the dep is removed from `pyproject.toml`.
+
+---
+
 ## 2026-05-12 cycle 81 — task `search_duckduckgo`
 **Symptom:** 13-step run with 4 errors. Steps 3, 6 hit `Unknown ref: e172`
 on the search combobox (stale-ref recurring flake from cycle 1). Steps
