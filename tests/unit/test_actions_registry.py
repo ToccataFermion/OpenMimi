@@ -458,6 +458,55 @@ async def test_extract_get_text_truncates_to_4000() -> None:
 
 
 @pytest.mark.asyncio
+async def test_extract_text_alias_resolves_to_get_text() -> None:
+    """'text' is accepted as an alias for 'get text' so the LLM doesn't have
+    to remember the two-word form. Reproduced from goldset cycle 80."""
+    from openmimi.tools import actions
+
+    body_text = "hello world"
+
+    class _Engine:
+        captured_js: list[str] = []
+
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            self.captured_js.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(stdout='{"result":"' + body_text + '"}')
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": body_text}
+
+    engine = _Engine()
+    result = await actions.get("extract")(engine, {"instruction": "text"})
+    assert result.is_error is False
+    assert result.output == body_text
+    assert engine.captured_js == ["document.body.innerText"]
+
+
+@pytest.mark.asyncio
+async def test_extract_unknown_instruction_returns_error_with_options() -> None:
+    """Unknown instructions surface as errors that list the valid options
+    rather than silently falling back to a generic page dump (which
+    burned a full step in goldset cycle 80 when the LLM passed JS code
+    as the instruction)."""
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *_args: str, **_kw: Any) -> Any:
+            raise AssertionError("_exec should not be called for unknown instruction")
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            raise AssertionError("_parse_data should not be called")
+
+    result = await actions.get("extract")(
+        _Engine(), {"instruction": "(() => document.title)()"}
+    )
+    assert result.is_error is True
+    assert "Unknown extract instruction" in result.output
+    assert "get text" in result.output
+    assert "eval" in result.output  # nudges agent toward the right tool
+
+
+@pytest.mark.asyncio
 async def test_get_attribute_requires_attribute_name() -> None:
     from openmimi.tools import actions
 

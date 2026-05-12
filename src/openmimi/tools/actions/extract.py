@@ -281,12 +281,29 @@ async def get_property(
         return ToolResult(output=f"get_property error: {exc}", is_error=True)
 
 
+_EXTRACT_INSTRUCTIONS = (
+    "get text",
+    "headings",
+    "links",
+    "forms",
+    "tables",
+    "metadata",
+    "images",
+)
+_EXTRACT_INSTRUCTION_ALIASES = {
+    "text": "get text",
+    "get_text": "get text",
+    "gettext": "get text",
+}
+
+
 @register("extract")
 async def extract(
     engine: "AgentBrowserTool", inp: dict[str, Any]
 ) -> ToolResult:
     """Extract structured data from the page based on instruction."""
     instruction = inp.get("instruction", "get text")
+    instruction = _EXTRACT_INSTRUCTION_ALIASES.get(instruction, instruction)
 
     if instruction == "get text":
         result = await engine._exec(
@@ -379,7 +396,14 @@ async def extract(
         })()
         """
     else:
-        js = f"({{url: window.location.href, title: document.title, text: document.body.innerText}})"
+        return ToolResult(
+            output=(
+                f"Unknown extract instruction {instruction!r}. "
+                f"Valid options: {', '.join(_EXTRACT_INSTRUCTIONS)}. "
+                "For arbitrary JS use action='eval' instead."
+            ),
+            is_error=True,
+        )
 
     try:
         result = await engine._exec("eval", js, "--json")

@@ -22,6 +22,33 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 80 — task `nav_wikipedia`
+**Symptom:** 4-step run that should've taken 2. Steps 2-3 both called
+`browser_extract action=extract` — step 2 with `instruction="text"`,
+step 3 with `instruction="(() => { const paragraphs = ... })()"` (raw
+JS code in the instruction field). Both silently returned a generic
+`{url, title, text: body.innerText}` page dump via the handler's
+catch-all `else` branch. Agent then fell back to `action=eval` at
+step 4 and succeeded. Final answer was correct.
+**Audit:** data/audit/f20d382390da4e36be522933cc58153b.jsonl
+**Root cause:** `actions/extract.py::extract` only matched the seven
+documented instructions exactly ("get text", "headings", ...). The
+LLM's "text" was a one-word shorthand for "get text", and the JS-as-
+instruction was a misunderstanding (the agent thought `extract` would
+interpret arbitrary JS like `eval` does). Both fell through to the
+undocumented catch-all that returned the whole page — looking close
+enough to success that the agent wasted a turn parsing it.
+**Fix:** commit <pending> — `actions/extract.py::extract` now (a)
+resolves the aliases `text` / `get_text` / `gettext` → `get text`,
+and (b) returns an `is_error=True` ToolResult listing valid options
+when the instruction is unrecognized, nudging the agent toward
+`action=eval` for arbitrary JS.
+**Tests:** added `test_extract_text_alias_resolves_to_get_text` and
+`test_extract_unknown_instruction_returns_error_with_options` in
+`tests/unit/test_actions_registry.py`.
+
+---
+
 ## 2026-05-12 cycle 71 — task `xft_fresh_login` (recurring)
 **Symptom:** 30-step run, 5 errors, ended on CAPTCHA-tail with no final
 text — same long-standing pattern as cycles 15/23/31/.../63. New
