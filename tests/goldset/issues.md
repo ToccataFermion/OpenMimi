@@ -22,6 +22,30 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 111 — task `xft_fresh_login`
+**Symptom:** 30 steps, 2 errors. Slider CAPTCHA actually appeared this run
+(unlike cycle 103 which had no CAPTCHA). Agent attempted to solve it: located
+slider handle, called computer.mouse_drag from x=429→657 at y=584 (step 18),
+then took 4 more eval-snapshots trying to verify the result. CAPTCHA didn't
+pass; agent reloaded the page and ran out of turn/step budget mid-refill.
+Final user-facing message was the half-sentence "Let me fill in the credentials
+again after the page reload." — i.e. mid-thought, no final pass/fail report.
+**Audit:** data/audit/4c799f7175244571b46c6283dfc52122.jsonl
+**Root cause:** Two layered issues — (1) the slider-drag distance/curve
+heuristic wasn't precise enough to satisfy this CAPTCHA puzzle (a known hard
+problem); (2) when the loop hits its turn limit, the agent's last LLM output
+becomes the user-facing answer even when it's a mid-thought continuation
+rather than a final status summary. This is a different failure mode from
+cycle 95's outright hallucination — here the agent honestly failed but the
+user-facing report is unclear/incomplete.
+**Fix:** no code fix — slider CAPTCHA solving is a known hard problem; the
+incomplete-final-answer behavior is a loop-design concern worth tracking but
+not blocking. The two stale-ref errors (e23, e5) are the recurring snapshot-
+ref flake cluster.
+**Tests:** none — vision/heuristic limit and loop-budget UX.
+
+---
+
 ## 2026-05-12 cycle 108 — task `screenshot_desktop`
 **Symptom:** 1 step, 0 errors. Agent's description fabricated a Microsoft 365
 account-lockout page ("Your account has been locked" + Forgot/Back buttons)
