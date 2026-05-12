@@ -38,7 +38,7 @@ instruction was a misunderstanding (the agent thought `extract` would
 interpret arbitrary JS like `eval` does). Both fell through to the
 undocumented catch-all that returned the whole page — looking close
 enough to success that the agent wasted a turn parsing it.
-**Fix:** commit <pending> — `actions/extract.py::extract` now (a)
+**Fix:** commit 5747c97 — `actions/extract.py::extract` now (a)
 resolves the aliases `text` / `get_text` / `gettext` → `get text`,
 and (b) returns an `is_error=True` ToolResult listing valid options
 when the instruction is unrecognized, nudging the agent toward
