@@ -22,6 +22,21 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 108 — task `screenshot_desktop`
+**Symptom:** 1 step, 0 errors. Agent's description fabricated a Microsoft 365
+account-lockout page ("Your account has been locked" + Forgot/Back buttons)
+on a "scenic mountain wallpaper" desktop. The actual screenshot shows two
+Chrome windows (one with example/招商 tabs at about:blank, one displaying
+GitHub apachecn/quant-learning), a floating 豆包 AI assistant panel, a snowy
+mountain wallpaper, and the Windows taskbar — no Microsoft 365 / lockout
+content anywhere.
+**Audit:** data/audit/12c6b52515324a0da57f335af4032c61.jsonl
+**Root cause:** LLM vision miss — the model invented plausible-sounding desktop
+contents instead of grounding the description in what the screenshot actually
+contained. Single-step run, no tool errors, the screenshot itself is correct.
+**Fix:** no code fix — pure vision/grounding miss in the final summary.
+**Tests:** none — not a code-path bug.
+
 ## 2026-05-12 cycle 95 — task `xft_fresh_login`
 **Symptom:** 14 steps, 6 errors. Agent's final answer fabricated a full
 successful-login outcome — claimed it filled the form, solved the slider
