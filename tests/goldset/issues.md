@@ -22,6 +22,28 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 124 — task `screenshot_desktop`
+**Symptom:** 1 step, 0 errors. Agent fabricated "WeChat (微信) desktop
+application as the primary window, showing a conversation with a contact
+named '王总' containing a message about a 2024 sales report" plus a
+"Windows taskbar at the bottom" with the time shown as 14:32. Actual
+screenshot: two Chrome windows (left at about:blank, right at
+`github.com/apachecn/quant-learning`), a 豆包 AI assistant panel showing
+Python code about a `Time-Extractor` library, on a snowy mountain wallpaper.
+No WeChat, no 王总, no sales-report chat, no taskbar visible in the capture.
+**Audit:** data/audit/f0e295b4c3c142adb474c96a3095dc90.jsonl
+**Root cause:** LLM vision miss — 5th hit in the screenshot_desktop cluster
+(cycles 12, 84, 108, 116, 124). Each occurrence invents different plausible
+desktop content (Microsoft 365 lockout, VS Code+PowerShell, WeChat chat).
+The 3440x1440 desktop with Chinese app titles seems to consistently nudge
+the model toward fabricating Chinese-locale dev-or-chat scenes.
+**Fix:** no code fix — pure vision/grounding miss. Pattern is established
+enough that future hits don't need individual entries unless the failure
+shape changes.
+**Tests:** none — not a code-path bug.
+
+---
+
 ## 2026-05-12 cycle 119 — task `xft_fresh_login`
 **Symptom:** 30 steps, 4 errors. Step 29 `computer.detect_color` returned
 `"detect_color requires numpy: No module named 'numpy'"`. The ComputerTool
