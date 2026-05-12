@@ -22,6 +22,37 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 119 — task `xft_fresh_login`
+**Symptom:** 30 steps, 4 errors. Step 29 `computer.detect_color` returned
+`"detect_color requires numpy: No module named 'numpy'"`. The ComputerTool
+system prompt advertises detect_color (and wait_for_change, get_pixel_color,
+locate, click_image) unconditionally; the LLM picked it during CAPTCHA solving
+expecting it to work, and burned a tool slot on a runtime-disabled feature.
+Final answer was a mid-thought continuation (loop-budget exhaustion, same UX
+miss as cycle 111).
+**Audit:** data/audit/d701d8b956d948959144338fa0e43f98.jsonl
+**Root cause:** numpy was not declared in pyproject.toml `dependencies`.
+test_computer_vision.py used `pytest.importorskip("numpy")` so its four
+covering tests silently skipped, hiding the gap from CI.
+**Fix:** commit 2771ac5 — added `numpy>=1.24` to core dependencies; promoted
+the test file's numpy import to unconditional; added
+`test_vision_tools_do_not_report_numpy_missing` as an explicit regression
+guard so removing the dep again fails loudly instead of silent-skipping.
+opencv-python (locate/click_image) has the same shape but wasn't hit this
+cycle — leaving for a future cycle to surface.
+**Tests:** `tests/unit/test_computer_vision.py::test_vision_tools_do_not_report_numpy_missing`
+plus the four existing vision tests now run (no longer skipped).
+**Side observations (no fix):**
+- Step 15: agent used `slider_captcha` as a literal ref name → "Element not
+  found". Bogus ref guess, LLM-reasoning miss.
+- Step 18: `wait_for_disappear ref=e5 milliseconds=3000` timed out at 10s
+  because the dialog actually was still present — correct behavior, not a bug.
+- Step 27: agent wrote a JS template-matching block that referenced
+  `bottomCanvas.height` but defined the variable as `bgCanvas`. ReferenceError.
+  LLM-coding miss.
+
+---
+
 ## 2026-05-12 cycle 116 — task `screenshot_desktop`
 **Symptom:** 1 step, 0 errors. Agent's description fabricated "Visual Studio
 Code open on the left side displaying source code (TypeScript/JavaScript
