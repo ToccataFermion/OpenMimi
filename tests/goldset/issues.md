@@ -22,6 +22,37 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 71 — task `xft_fresh_login` (recurring)
+**Symptom:** 30-step run, 5 errors, ended on CAPTCHA-tail with no final
+text — same long-standing pattern as cycles 15/23/31/.../63. New
+behaviour worth flagging: step 24 issued
+`browser_advanced action=cdp cdp_method=Page.captureScreenshot` in an
+attempt to bypass the disabled-screenshot gate, and got
+"CDP error: window.__openmimi_cdp_send is not a function". Step 26
+`get_box target_text="按住左方滑块..."` failed and the recorded
+result_summary shows cp936 mojibake for the Chinese visible text.
+Other errors: step 7 wait_for_navigation timeout (recurring), step 10
+stale ref e22, step 17 stale ref e52.
+**Audit:** data/audit/800e7b1dc08249a69c341771053b1ee8.jsonl
+**Root cause:** Two distinct things, both narrow:
+- CDP escape hatch depends on a `window.__openmimi_cdp_send` binding
+  injected by agent-browser. On this xft page the binding wasn't
+  present — likely because the page reload at step 4 happened before
+  agent-browser re-exposed the binding, or the site's CSP/Trusted Types
+  rejected the injection. The error message itself is correct and
+  informative; this is not a tool bug.
+- get_box error_summary mojibake is an audit-log decoding glitch:
+  agent-browser stderr bytes were UTF-8, but `_exec`'s stderr capture
+  on Windows decoded with cp936. Cosmetic — does not affect behaviour.
+**Fix:** no code fix — agent should not try CDP screenshot as a gate
+bypass (the gate is intentional). The mojibake is worth a follow-up
+in `agent_browser.py:_run_subprocess` to force `errors='replace'` +
+`encoding='utf-8'` on stderr decode, but deferring until it surfaces
+on a non-flake task.
+**Tests:** none.
+
+---
+
 ## 2026-05-12 cycle 65 — task `search_duckduckgo`
 **Symptom:** 13-step run, 4 errors but agent self-recovered and
 returned correct top-3 (OpenAI / ChatGPT / Wikipedia). Errors:
