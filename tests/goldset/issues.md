@@ -22,6 +22,35 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 65 — task `search_duckduckgo`
+**Symptom:** 13-step run, 4 errors but agent self-recovered and
+returned correct top-3 (OpenAI / ChatGPT / Wikipedia). Errors:
+- step 3, 7: stale `ref=e172` after page state change (recurring,
+  documented cycle 1).
+- step 6: `browser_interact action=type target_text="..."` failed
+  with "Unknown subaction: type" from agent-browser.
+- step 8: `browser_interact action=fill target_text="..." value="OpenAI"`
+  failed with "Missing 'value' for fill subaction" — even though
+  value was clearly present in the tool input.
+**Audit:** data/audit/92a3bd67910948809135aa02b5b23606.jsonl
+**Root cause:** the `target_text` payloads in steps 6 and 8 contained
+unpaired UTF-16 surrogates (`\udca1`, `\udca2`) picked up from a
+mojibake snapshot. On Windows the subprocess CreateProcess argv
+encoding chokes on lone surrogates, which corrupts the trailing args.
+The downstream agent-browser binary then sees a truncated/garbled
+command line — explaining both the "Unknown subaction: type" (the
+`type` keyword shifts position) and the "Missing 'value'" rejection
+even though we passed value. `find text <target> type <value>` is
+actually documented as valid by `agent-browser find --help`.
+**Fix:** no code fix this cycle — agent recovered and the bug is
+narrow (corrupt-unicode propagating from snapshot). Worth a defensive
+sanitizer (`_strip_lone_surrogates`) on ref/target_text/value before
+`_exec` in `tools/actions/interaction.py`; deferring until a clearer
+repro path. Logged so the pattern is searchable.
+**Tests:** none.
+
+---
+
 ## 2026-05-12 cycle 64 — task `nav_wikipedia`
 **Symptom:** Clean 4-step run extracted the correct first paragraph
 ("Python is a high-level, general-purpose programming language ...")
