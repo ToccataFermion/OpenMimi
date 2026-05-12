@@ -553,7 +553,15 @@ def _extract_text_from_response_content(content: list[dict[str, Any]]) -> str:
 
 
 def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
-    """Pull all `text` blocks from the most recent assistant message."""
+    """Pull `text` blocks from the most recent assistant message that has any.
+
+    Walks backwards through assistant messages and returns the first one with
+    non-empty text content. Skipping tool-use-only assistant messages matters
+    when the loop terminates via the verifier on a tool_use turn — the most
+    recent assistant message there has no text, so naively returning it would
+    surface "(no final text)" to the user even when the agent successfully
+    produced text on an earlier turn.
+    """
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
             continue
@@ -564,8 +572,10 @@ def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
                 for c in content
                 if isinstance(c, dict) and c.get("type") == "text"
             ]
-            return "\n".join(p for p in parts if p)
-        if isinstance(content, str):
+            text = "\n".join(p for p in parts if p)
+            if text:
+                return text
+        elif isinstance(content, str) and content:
             return content
     return ""
 

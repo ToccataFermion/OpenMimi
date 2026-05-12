@@ -8,7 +8,7 @@ import pytest
 
 from openmimi.audit import JsonlAuditLogger
 from openmimi.config.schema import AppConfig
-from openmimi.orchestrator import Orchestrator, _build_system_prompt, _format_plan_summary
+from openmimi.orchestrator import Orchestrator, _build_system_prompt, _extract_last_assistant_text, _format_plan_summary
 from openmimi.planning import LLMPlanner, NullVerifier, Plan, PlanStep
 from openmimi.tools.base import ToolBase
 from openmimi.tools.collection import ToolCollection
@@ -901,3 +901,47 @@ def test_from_env_wires_sub_agent_session_provider(
     assert sub_tool._session_provider() == "first-sid"  # type: ignore[attr-defined]
     orch._current_session_id = "second-sid"
     assert sub_tool._session_provider() == "second-sid"  # type: ignore[attr-defined]
+
+
+def test_extract_last_assistant_text_returns_text_block() -> None:
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+    ]
+    assert _extract_last_assistant_text(msgs) == "hello"
+
+
+def test_extract_last_assistant_text_skips_tool_use_only_assistant() -> None:
+    """Regression: when the verifier ends the loop on a tool_use turn the
+    most recent assistant has no text — fall back to the prior assistant
+    instead of returning empty (which the CLI renders as "(no final text)").
+    """
+    msgs = [
+        {"role": "user", "content": "search"},
+        {"role": "assistant", "content": [{"type": "text", "text": "earlier reply"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "ok"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "2", "name": "x", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "2", "content": "answer"}]},
+    ]
+    assert _extract_last_assistant_text(msgs) == "earlier reply"
+
+
+def test_extract_last_assistant_text_empty_when_no_text_anywhere() -> None:
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "1", "name": "x", "input": {}}]},
+    ]
+    assert _extract_last_assistant_text(msgs) == ""
+
+
+def test_extract_last_assistant_text_handles_string_content() -> None:
+    msgs = [{"role": "assistant", "content": "plain"}]
+    assert _extract_last_assistant_text(msgs) == "plain"
+
+
+def test_extract_last_assistant_text_skips_empty_string_content() -> None:
+    msgs = [
+        {"role": "assistant", "content": [{"type": "text", "text": "kept"}]},
+        {"role": "assistant", "content": ""},
+    ]
+    assert _extract_last_assistant_text(msgs) == "kept"
