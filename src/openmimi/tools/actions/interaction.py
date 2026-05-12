@@ -214,9 +214,12 @@ async def type_(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     if ref:
         await engine._exec("type", ref, value, "--json")
     elif target_text:
-        await engine._exec(
-            "find", "text", target_text, "type", value, "--json"
-        )
+        # agent-browser's `find <locator> <value> type <text>` reports
+        # "Unknown subaction: type" — the chained-action path doesn't
+        # accept type at all. Workaround: focus via find+click, then
+        # send keystrokes to the focused element.
+        await engine._exec("find", "text", target_text, "click", "--json")
+        await engine._exec("keyboard", "type", value, "--json")
     else:
         return ToolResult(output="type requires 'ref' or 'target_text'")
     image = await engine._take_screenshot()
@@ -234,9 +237,15 @@ async def fill(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     if ref:
         await engine._exec("fill", ref, value, "--json")
     elif target_text:
-        await engine._exec(
-            "find", "text", target_text, "fill", value, "--json"
-        )
+        # agent-browser's `find <locator> <value> fill <text>` argv parser
+        # drops the trailing <text>: when the element is found, the daemon
+        # returns "Missing 'value' for fill subaction" even though value
+        # was provided. Repro'd directly on the CLI in cycles 65/81/89.
+        # Workaround: focus via find+click, select-all to clear, then
+        # send keystrokes — same semantics as fill (clear-then-type).
+        await engine._exec("find", "text", target_text, "click", "--json")
+        await engine._exec("press", "Control+a", "--json")
+        await engine._exec("keyboard", "type", value, "--json")
     else:
         return ToolResult(output="fill requires 'ref' or 'target_text'")
     image = await engine._take_screenshot()

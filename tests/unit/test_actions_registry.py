@@ -178,6 +178,13 @@ async def test_click_requires_ref_or_target_text() -> None:
 
 @pytest.mark.asyncio
 async def test_type_handler_uses_find_when_target_text_given() -> None:
+    """type with target_text: focus via find+click, then keyboard.type.
+
+    The naive `find <loc> <val> type <text>` argv path is broken in
+    agent-browser — repro on the CLI returns `Unknown subaction: type`
+    (cycles 65 / 81 / 89). The handler must take the click + keyboard
+    path instead.
+    """
     from openmimi.tools import actions
 
     captured: list[tuple[Any, ...]] = []
@@ -195,8 +202,68 @@ async def test_type_handler_uses_find_when_target_text_given() -> None:
     )
     assert "Typed 5 character(s)" in result.output
     assert captured == [
-        ("find", "text", "Username", "type", "alice", "--json")
+        ("find", "text", "Username", "click", "--json"),
+        ("keyboard", "type", "alice", "--json"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_fill_handler_uses_click_clear_keyboard_when_target_text_given() -> None:
+    """fill with target_text: focus, select-all, then keyboard.type.
+
+    Same root cause as `type`: agent-browser's
+    `find <loc> <val> fill <text>` drops the trailing text and returns
+    "Missing 'value' for fill subaction" once the element is actually
+    found (CLI-repro'd cycles 65 / 81 / 89). The Control+a step preserves
+    fill's clear-then-type semantics.
+    """
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    result = await actions.get("fill")(
+        _Engine(),
+        {"target_text": "利用 DuckDuckGo 进行搜索", "value": "OpenAI"},
+    )
+    assert "Filled with 6 character(s)" in result.output
+    assert captured == [
+        ("find", "text", "利用 DuckDuckGo 进行搜索", "click", "--json"),
+        ("press", "Control+a", "--json"),
+        ("keyboard", "type", "OpenAI", "--json"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fill_handler_with_ref_uses_direct_fill() -> None:
+    """fill with ref: direct `fill <ref> <value>` (no workaround needed).
+
+    The agent-browser bug only affects the chained `find ... fill <text>`
+    form. The plain `fill <ref> <text>` path works correctly.
+    """
+    from openmimi.tools import actions
+
+    captured: list[tuple[Any, ...]] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            captured.append(args)
+            return SimpleNamespace(stdout="ok")
+
+        async def _take_screenshot(self) -> str | None:
+            return None
+
+    await actions.get("fill")(
+        _Engine(), {"ref": "e22", "value": "OpenAI"}
+    )
+    assert captured == [("fill", "e22", "OpenAI", "--json")]
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,39 @@ or a recurring flake worth tracking.
 
 ---
 
-## 2026-05-12 cycle 85 — task `focus_then_screenshot`
+## 2026-05-12 cycle 89 — task `search_duckduckgo`
+**Symptom:** 17-step run, 5 errors. The cycle-65/81 cluster recurred for
+the 3rd time: `Unknown ref: e172` stale-ref (steps 3, 6),
+`Unknown subaction: type` (step 7), and `Missing 'value' for fill
+subaction` despite value being clearly populated (step 8 — target_text
+"利用 DuckDuckGo 进行搜索", value "OpenAI"). Agent self-recovered via
+direct `?q=OpenAI` URL; final top-3 correct.
+**Audit:** data/audit/b6e73220a32b4422b03daa53632dc7bc.jsonl
+**Root cause:** Isolated this time via direct CLI repro:
+`agent-browser find text "利用 DuckDuckGo 进行搜索" fill OpenAI --json`
+on a live DDG page returns `Missing 'value' for fill subaction`.
+agent-browser's chained-action argv parser (`find <locator> <value>
+<action> [text]`) drops the trailing `[text]` whenever the find
+succeeds — the same parser also rejects `type` outright with `Unknown
+subaction: type`, even though `type` is listed in `agent-browser find
+--help` as a valid chained action. Both bugs are in agent-browser
+itself; mimi just exposed them via the `find text … fill/type` codepath.
+**Fix:** commit (this) — `actions/interaction.py::fill` and
+`::type` no longer use the broken chained form when `target_text` is
+provided. Both now go through a click+keyboard workaround: `find text X
+click` to focus, then `keyboard type V` (with `press Control+a` between
+for `fill` to preserve clear-then-type semantics). The `ref` path is
+unchanged because direct `fill <ref> <value>` works correctly.
+**Tests:** updated `test_type_handler_uses_find_when_target_text_given`
+to pin the new 2-call sequence; added
+`test_fill_handler_uses_click_clear_keyboard_when_target_text_given`
+(3-call sequence with Chinese target_text matching the failing cycle)
+and `test_fill_handler_with_ref_uses_direct_fill` (regression guard so
+the ref path doesn't accidentally pick up the workaround).
+
+---
+
+
 **Symptom:** 3 clean steps (list_windows → focus_window → screenshot), task
 "succeeded" in that the LLM reported the right window title
 ("about:blank - Google Chrome"). But step 3 captured the full 3440×1440
