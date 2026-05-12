@@ -353,6 +353,16 @@ class ComputerTool(ToolBase):
                         "type": "string",
                         "description": "Window title substring for focus_window action.",
                     },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional sub-rectangle for screenshot action: {left, top, width, height} in absolute screen pixels. If omitted, captures the full primary monitor. Use the box returned by list_windows / focus_window to crop to a specific window.",
+                        "properties": {
+                            "left": {"type": "integer"},
+                            "top": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"},
+                        },
+                    },
                     "end_x": {
                         "type": "integer",
                         "description": "End X coordinate for drag (absolute screen pixels).",
@@ -505,17 +515,41 @@ class ComputerTool(ToolBase):
     #  Actions
     # ------------------------------------------------------------------ #
 
-    async def _do_screenshot(self, _inp: dict[str, Any]) -> ToolResult:
+    async def _do_screenshot(self, inp: dict[str, Any]) -> ToolResult:
         if screenshots_disabled():
             return ToolResult(
                 output="Screenshots disabled by default. Set OPENMIMI_ENABLE_SCREENSHOTS=1 or pass --screenshots to enable.",
                 base64_image=None,
             )
         sct = self._ensure_mss()
-        # monitors[0] is the virtual screen (all monitors); monitors[1] is the
-        # primary display.  We capture the primary display so that coordinates
-        # derived from the screenshot map 1:1 to mouse_move/mouse_drag.
-        raw = sct.grab(sct.monitors[1])
+        region = inp.get("region")
+        grab_region: dict[str, int] | None = None
+        if isinstance(region, dict):
+            def _as_int(v: Any) -> int:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return 0
+            grab_region = {
+                "left": _as_int(region.get("left", 0)),
+                "top": _as_int(region.get("top", 0)),
+                "width": _as_int(region.get("width", 0)),
+                "height": _as_int(region.get("height", 0)),
+            }
+            if grab_region["width"] <= 0 or grab_region["height"] <= 0:
+                return ToolResult(
+                    output=(
+                        f"Screenshot region needs positive width and height, "
+                        f"got {grab_region}"
+                    ),
+                    is_error=True,
+                )
+            raw = sct.grab(grab_region)
+        else:
+            # monitors[0] is the virtual screen (all monitors); monitors[1] is the
+            # primary display.  We capture the primary display so that coordinates
+            # derived from the screenshot map 1:1 to mouse_move/mouse_drag.
+            raw = sct.grab(sct.monitors[1])
         import mss.tools
         img_bytes = mss.tools.to_png(raw.rgb, raw.size)
         media_type = "image/png"
@@ -551,8 +585,13 @@ class ComputerTool(ToolBase):
         )
         with open(path, "wb") as f:
             f.write(img_bytes)
+        region_suffix = (
+            f" region=({grab_region['left']},{grab_region['top']})"
+            if grab_region
+            else ""
+        )
         return ToolResult(
-            output=f"Screenshot saved to {path} ({raw.width}x{raw.height})",
+            output=f"Screenshot saved to {path} ({raw.width}x{raw.height}){region_suffix}",
             base64_image=f"data:{media_type};base64,{b64}",
             image_media_type=media_type,
         )

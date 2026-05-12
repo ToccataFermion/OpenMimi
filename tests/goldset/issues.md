@@ -22,6 +22,30 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 85 — task `focus_then_screenshot`
+**Symptom:** 3 clean steps (list_windows → focus_window → screenshot), task
+"succeeded" in that the LLM reported the right window title
+("about:blank - Google Chrome"). But step 3 captured the full 3440×1440
+desktop and the LLM's final answer claimed it was "the exact screen area
+covered by the focused window (visible on the left side ... 1132×940)" —
+which is misleading. The task explicitly asked for a screenshot of *just*
+the window region.
+**Audit:** data/audit/7214e4d18ddd4d2594fef485a3aa0a75.jsonl
+**Root cause:** `computer.screenshot` ignored its `inp` entirely and always
+called `sct.grab(sct.monitors[1])` — there was no API for region capture.
+The same pattern showed up "adapted" in cycles 21/29/37/45/53/61/69/77
+without ever being logged.
+**Fix:** added optional `region={left,top,width,height}` to the screenshot
+schema; `_do_screenshot` now forwards it to `mss.grab` when present, errors
+on non-positive size, and tags the output line with `region=(x,y)` for
+audit visibility.
+**Tests:** `tests/unit/test_computer_screenshot_region.py` — three cases:
+region forwards to `grab`, no-region keeps the legacy primary-monitor
+behavior, zero-size errors and does not call `grab` at all. Standalone file
+so it works without numpy (unlike `test_computer_vision`).
+
+---
+
 ## 2026-05-12 cycle 84 — task `screenshot_desktop`
 **Symptom:** Step 1 `computer screenshot` failed with `mss is required for
 computer screenshots. Install it with: pip install mss` (14ms — never even
