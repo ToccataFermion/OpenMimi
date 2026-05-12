@@ -22,6 +22,30 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 64 — task `nav_wikipedia`
+**Symptom:** Clean 4-step run extracted the correct first paragraph
+("Python is a high-level, general-purpose programming language ...")
+at step 4, verifier marked plan complete — but CLI printed
+"(no final text)" instead of the paragraph.
+**Audit:** data/audit/4d2a45ab3e8d4b799f068eb0566e8a57.jsonl
+**Root cause:** `_extract_last_assistant_text` returned on the FIRST
+assistant message in reverse order regardless of whether it had text
+content. When the loop terminates via the "verifier says done + plan
+complete" branch in `loop.py:486-488`, the most recent assistant
+message is a `tool_use`-only block (no text) — so the function
+returned `""` even though a prior assistant turn had usable text. This
+manifested only on plan-completed-via-verifier endings, which is why
+xft cycles (max_turns exits) never repro'd it cleanly.
+**Fix:** commit 7422423 — `_extract_last_assistant_text` now walks
+backwards through all assistant messages and returns the first one with
+non-empty text content. Treats empty string content as "skip" too.
+**Tests:** added 5 unit tests in `tests/unit/test_orchestrator.py`:
+`test_extract_last_assistant_text_returns_text_block`,
+`_skips_tool_use_only_assistant`, `_empty_when_no_text_anywhere`,
+`_handles_string_content`, `_skips_empty_string_content`.
+
+---
+
 ## 2026-05-12 cycle 63 — task `xft_fresh_login` (recurring)
 **Symptom:** Steps 1-3 issued `browser_advanced storage clear` /
 `clear_cache` before any navigation; all three returned SecurityError
