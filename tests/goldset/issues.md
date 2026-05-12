@@ -22,6 +22,33 @@ or a recurring flake worth tracking.
 
 ---
 
+## 2026-05-12 cycle 81 — task `search_duckduckgo`
+**Symptom:** 13-step run with 4 errors. Steps 3, 6 hit `Unknown ref: e172`
+on the search combobox (stale-ref recurring flake from cycle 1). Steps
+7, 8 sent `browser_interact action=fill target_text="利用 DuckDuckGo 进行搜索"
+value="OpenAI"` and got back `"Missing 'value' for fill subaction"` —
+despite `value` being clearly populated in `tool_input`. Agent recovered
+by navigating to `https://duckduckgo.com/?q=OpenAI` directly. Final
+answer was correct (OpenAI / ChatGPT / Wikipedia).
+**Audit:** data/audit/2847d7e24deb46918a062a5e9b89d418.jsonl
+**Root cause:** Two distinct recurring flakes.
+1. Stale ref e172 after the page mutates from a click — same pattern as
+   cycle 1, agent assumes refs persist across non-navigations.
+2. The `fill` subaction failure is *not* the cycle-65 surrogate-mojibake
+   issue (the Chinese here is well-formed UTF-8, no lone surrogates).
+   Direct subprocess repro:
+   `agent-browser-win32-x64.exe --headed find text "利用 DuckDuckGo 进行搜索" fill OpenAI --json`
+   returns `{"success":false,"error":"Element not found..."}` —
+   *different* error than the one mimi sees. Suggests context-dependent
+   argv handling between mimi's `subprocess.run` path and a direct CLI
+   invocation. Root cause not isolated this cycle.
+**Fix:** no code fix — recurring flake worth tracking; needs cleaner
+repro before changing `interaction.py::fill` or `agent_browser.py`
+argv assembly. Agent self-recovered via direct URL.
+**Tests:** none (no fix landed).
+
+---
+
 ## 2026-05-12 cycle 80 — task `nav_wikipedia`
 **Symptom:** 4-step run that should've taken 2. Steps 2-3 both called
 `browser_extract action=extract` — step 2 with `instruction="text"`,
