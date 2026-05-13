@@ -83,6 +83,17 @@ TOOL_DESCRIPTION = (
     "CDP raw access: action='cdp' with 'cdp_method' and optional 'cdp_params' sends arbitrary "
     "Chrome DevTools Protocol commands via window.__openmimi_cdp_send. Use as an escape hatch "
     "for CDP features not covered by other actions.\n"
+    "Slider CAPTCHA gap detection: action='slider_find_gap' with 'bg_url'/'bg_path' and "
+    "'piece_url'/'piece_path' uses OpenCV template matching to find the puzzle-piece gap X coordinate. "
+    "Returns gap_x and confidence.\n"
+    "Slider CAPTCHA drag: action='slider_drag_cdp' with 'start_x', 'start_y', 'end_x', 'end_y' "
+    "dispatches CDP Input.dispatchMouseEvent (mousePressed -> mouseMoved -> mouseReleased). "
+    "Coordinates are CSS pixels. Set humanize=true for Bezier trajectory. "
+    "This avoids OS-mouse DPI/focus issues entirely.\n"
+    "Slider CAPTCHA vision detection: action='slider_find_gap_vision' with 'bg_url'/'bg_path'/'bg_selector' "
+    "and optional 'piece_url'/'piece_path'/'piece_selector' uses a vision LLM (e.g. gpt-4o, claude-3.5-sonnet) "
+    "to identify the puzzle-piece gap X coordinate. Requires 'api_key' and 'model'. "
+    "Use this when OpenCV fails or for higher accuracy. Only call when a slider CAPTCHA is actually present.\n"
     "Session persistence: action='save_session' with 'file_path' persists cookies/storage; "
     "action='load_session' with 'file_path' restores them to avoid repeated logins. "
     "Persistent profile: pass user_data_dir when creating the tool to reuse cookies, cache, "
@@ -159,6 +170,9 @@ _ACTION_ENUM: list[str] = [
     "set_locale",
     "set_geolocation",
     "cdp",
+    "slider_find_gap",
+    "slider_find_gap_vision",
+    "slider_drag_cdp",
 ]
 
 
@@ -422,6 +436,63 @@ def build_input_schema() -> dict[str, Any]:
             "accuracy": {
                 "type": "number",
                 "description": "Accuracy in meters for action='set_geolocation' (default 100).",
+            },
+            "bg_url": {
+                "type": "string",
+                "description": "URL of the slider CAPTCHA background image (the full image with the empty slot) for action='slider_find_gap'.",
+            },
+            "bg_path": {
+                "type": "string",
+                "description": "Local file path of the slider CAPTCHA background image for action='slider_find_gap'.",
+            },
+            "piece_url": {
+                "type": "string",
+                "description": "URL of the slider CAPTCHA puzzle-piece image for action='slider_find_gap'.",
+            },
+            "piece_path": {
+                "type": "string",
+                "description": "Local file path of the slider CAPTCHA puzzle-piece image for action='slider_find_gap'.",
+            },
+            "start_x": {
+                "type": "integer",
+                "description": "Starting X coordinate (CSS pixels) for action='slider_drag_cdp'.",
+            },
+            "start_y": {
+                "type": "integer",
+                "description": "Starting Y coordinate (CSS pixels) for action='slider_drag_cdp'.",
+            },
+            "end_x": {
+                "type": "integer",
+                "description": "Ending X coordinate (CSS pixels) for action='slider_drag_cdp'.",
+            },
+            "end_y": {
+                "type": "integer",
+                "description": "Ending Y coordinate (CSS pixels) for action='slider_drag_cdp'.",
+            },
+            "bg_selector": {
+                "type": "string",
+                "description": "CSS selector of the slider CAPTCHA background element for action='slider_find_gap_vision'. Screenshot of this element is sent to the vision LLM.",
+            },
+            "piece_selector": {
+                "type": "string",
+                "description": "CSS selector of the puzzle piece element for action='slider_find_gap_vision'.",
+            },
+            "api_key": {
+                "type": "string",
+                "description": "API key for the vision LLM used by action='slider_find_gap_vision'.",
+            },
+            "model": {
+                "type": "string",
+                "description": "Model name for the vision LLM, e.g. 'gpt-4o' or 'claude-3-5-sonnet-20241022', used by action='slider_find_gap_vision'.",
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Optional API base URL for OpenAI-compatible proxies, used by action='slider_find_gap_vision'.",
+            },
+            "provider": {
+                "type": "string",
+                "enum": ["openai", "anthropic"],
+                "description": "LLM provider for action='slider_find_gap_vision' (default 'openai').",
             },
         },
         "required": ["action"],

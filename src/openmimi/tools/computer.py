@@ -25,6 +25,7 @@ import time
 from typing import Any
 
 from ..utils.env_flags import screenshots_disabled
+from ..utils.trajectory import generate_trajectory
 from .base import ToolBase
 from .result import ToolResult
 
@@ -48,6 +49,10 @@ _TOOL_DESCRIPTION = (
     "- key_combo keys: press multiple keys simultaneously (e.g. ['Control','c']).\n"
     "- type text: type a string\n"
     "- wait milliseconds=1000: pause briefly for UI to settle\n"
+    "- wait_for_change [x y width height] [timeout_ms=5000] [interval_ms=500] [threshold=0.01]: wait until a screen region changes compared to its initial state. "
+    "  Useful for detecting when a page finishes loading, a CAPTCHA appears, or a button becomes active. Returns the change percentage.\n"
+    "- get_pixel_color x y: return the RGB colour of a single screen pixel.\n"
+    "- detect_color r g b [tolerance=10] [x y width height]: search a screen region for pixels matching a target RGB colour within a tolerance. Returns match count and first location.\n"
     "- locate template_path [confidence=0.8] [scales]: find template image on screen with multi-scale OpenCV matching (returns center coords). Searches 0.5x-1.5x by default; optionally pass a custom scales array.\n"
     "- click_image template_path [confidence=0.8] [button=left|right]: find template image on screen and click a random point inside its bounds. "
     "Uses multi-scale matching so slight UI zoom differences don't break the match. Useful for clicking icons, buttons, or UI elements in native apps when coordinates are unknown.\n"
@@ -56,7 +61,7 @@ _TOOL_DESCRIPTION = (
     "- launch command [args] [wait_ms=2000]: start an application by path, name, or alias\n"
     "- file file_action=read|write file_path [file_content]: read from or write to a file on disk.\n"
     "- get_screen_info: return primary monitor resolution and DPI.\n"
-    "- ocr [x y width height] [language=chi_sim+eng]: extract text from a screen region using Tesseract OCR. "
+    "- ocr [x y width height] [language=chi_sim+eng]: extract text from a screen region using Tesseract OCR with per-word confidence. "
     "  If no region is specified, OCR the full screenshot. Useful for reading native app UI or notifications.\n"
     "- click_text target_text [button=left|right] [language=chi_sim+eng]: find text on screen via OCR and click it. "
     "  Useful for interacting with native apps where you cannot use coordinates.\n"
@@ -187,6 +192,39 @@ def _scale_to_abs(x: int, y: int) -> tuple[int, int]:
     return abs_x, abs_y
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """Coerce LLM-supplied numeric args to int.
+
+    LLMs sometimes serialise integer tool args as strings ("530") or floats
+    (530.5). Returning the default lets callers preserve "missing" semantics
+    (None → default), while accepting both ints, numeric strings, and floats.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):  # bool is a subclass of int — keep behaviour explicit
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except (ValueError, AttributeError):
+            return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    """Like _coerce_int but returns None when the input is missing/None."""
+    if value is None:
+        return None
+    return _coerce_int(value, default=0)
+
+
 class _MOUSEINPUT(ctypes.Structure):
     _fields_ = [
         ("dx", ctypes.c_long),
@@ -288,6 +326,9 @@ class ComputerTool(ToolBase):
                             "key_combo",
                             "type",
                             "wait",
+                            "wait_for_change",
+                            "get_pixel_color",
+                            "detect_color",
                             "locate",
                             "click_image",
                             "list_windows",
@@ -386,6 +427,34 @@ class ComputerTool(ToolBase):
                     "milliseconds": {
                         "type": "integer",
                         "description": "Wait time in milliseconds (default 1000).",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Maximum time to wait for change in milliseconds (default 5000).",
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Polling interval in milliseconds for wait_for_change (default 500).",
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Minimum fraction of pixels that must change to consider a change detected (0.0-1.0, default 0.01).",
+                    },
+                    "r": {
+                        "type": "integer",
+                        "description": "Red channel (0-255) for get_pixel_color or detect_color.",
+                    },
+                    "g": {
+                        "type": "integer",
+                        "description": "Green channel (0-255) for get_pixel_color or detect_color.",
+                    },
+                    "b": {
+                        "type": "integer",
+                        "description": "Blue channel (0-255) for get_pixel_color or detect_color.",
+                    },
+                    "tolerance": {
+                        "type": "integer",
+                        "description": "Colour distance tolerance for detect_color (default 10).",
                     },
                     "template_path": {
                         "type": "string",
@@ -493,6 +562,9 @@ class ComputerTool(ToolBase):
             "key_combo": self._do_key_combo,
             "type": self._do_type,
             "wait": self._do_wait,
+            "wait_for_change": self._do_wait_for_change,
+            "get_pixel_color": self._do_get_pixel_color,
+            "detect_color": self._do_detect_color,
             "locate": self._do_locate,
             "click_image": self._do_click_image,
             "list_windows": self._do_list_windows,
@@ -597,17 +669,28 @@ class ComputerTool(ToolBase):
         )
 
     async def _do_mouse_move(self, inp: dict[str, Any]) -> ToolResult:
-        x = inp.get("x", 0)
-        y = inp.get("y", 0)
+        x = _coerce_int(inp.get("x", 0))
+        y = _coerce_int(inp.get("y", 0))
         humanize = inp.get("humanize", False)
 
         if humanize:
-            steps = max(2, min(inp.get("steps", 20), 200))
-            delay_ms = max(1, min(inp.get("delay_ms", 10), 500))
+            steps = max(2, min(_coerce_int(inp.get("steps", 20), 20), 200))
+            delay_ms = max(1, min(_coerce_int(inp.get("delay_ms", 10), 10), 500))
             point = ctypes.wintypes.POINT()
             ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
-            track = self._generate_human_trajectory(point.x, point.y, x, y, steps, delay_ms)
-            await self._execute_human_movement(track, delay_ms)
+            track = generate_trajectory(point.x, point.y, x, y, steps, delay_ms, humanize=True)
+            for bx, by, d in track:
+                abs_x, abs_y = _scale_to_abs(bx, by)
+                inp_struct = _INPUT()
+                inp_struct.type = INPUT_MOUSE
+                inp_struct.mi.dx = abs_x
+                inp_struct.mi.dy = abs_y
+                inp_struct.mi.mouseData = 0
+                inp_struct.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
+                inp_struct.mi.time = 0
+                inp_struct.mi.dwExtraInfo = 0
+                ctypes.windll.user32.SendInput(1, ctypes.byref(inp_struct), ctypes.sizeof(_INPUT))
+                time.sleep(d / 1000.0)
             return ToolResult(output=f"Mouse human-moved to ({x}, {y}) via {len(track)} points")
 
         abs_x, abs_y = _scale_to_abs(x, y)
@@ -645,12 +728,12 @@ class ComputerTool(ToolBase):
 
     async def _do_mouse_click(self, inp: dict[str, Any]) -> ToolResult:
         import random
-        x = inp.get("x")
-        y = inp.get("y")
+        x = _coerce_optional_int(inp.get("x"))
+        y = _coerce_optional_int(inp.get("y"))
         button = inp.get("button", "left")
         wander = inp.get("wander", False)
-        width = int(inp.get("width", 0))
-        height = int(inp.get("height", 0))
+        width = _coerce_int(inp.get("width", 0))
+        height = _coerce_int(inp.get("height", 0))
         # Move first if coordinates provided
         if x is not None and y is not None:
             tx, ty = self._jittered_click_coords(x, y, width, height)
@@ -676,8 +759,8 @@ class ComputerTool(ToolBase):
 
     async def _do_mouse_down(self, inp: dict[str, Any]) -> ToolResult:
         button = inp.get("button", "left")
-        x = inp.get("x")
-        y = inp.get("y")
+        x = _coerce_optional_int(inp.get("x"))
+        y = _coerce_optional_int(inp.get("y"))
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})
             time.sleep(0.05)
@@ -691,8 +774,8 @@ class ComputerTool(ToolBase):
 
     async def _do_mouse_up(self, inp: dict[str, Any]) -> ToolResult:
         button = inp.get("button", "left")
-        x = inp.get("x")
-        y = inp.get("y")
+        x = _coerce_optional_int(inp.get("x"))
+        y = _coerce_optional_int(inp.get("y"))
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})
             time.sleep(0.05)
@@ -704,82 +787,6 @@ class ComputerTool(ToolBase):
         self._send_mouse_event(up_flag)
         return ToolResult(output=f"Mouse {button} up")
 
-    def _generate_human_trajectory(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, steps: int, delay_ms: int
-    ) -> list[tuple[int, int]]:
-        """Generate a human-like quadratic-Bezier trajectory with acceleration/deceleration.
-
-        Uses a control point offset perpendicular to the straight-line path so the
-        cursor arcs slightly (mimicking arm kinematics).  Velocity ramps up for
-        ~80 % of the distance then decelerates, with random micro-jitter and
-        occasional hesitations.
-        """
-        import random
-        import math
-
-        dx = end_x - start_x
-        dy = end_y - start_y
-        distance = math.hypot(dx, dy)
-        if distance < 1:
-            return [(end_x, end_y)]
-
-        # Perpendicular offset for the control point (arc direction)
-        # Offset magnitude is 5-15 % of distance, capped at 80 px
-        offset_mag = min(80, distance * random.uniform(0.05, 0.15))
-        # Randomly choose left or right of the straight path
-        side = 1 if random.random() < 0.5 else -1
-        # Perpendicular unit vector (-dy, dx) / distance
-        perp_x = -dy / distance * offset_mag * side
-        perp_y = dx / distance * offset_mag * side
-        ctrl_x = (start_x + end_x) / 2 + perp_x
-        ctrl_y = (start_y + end_y) / 2 + perp_y
-
-        # Adaptive step count: short moves don't need many points
-        steps = max(3, min(steps, int(distance / 3) + 3))
-
-        track: list[tuple[int, int]] = []
-        # Velocity profile: accelerate for 0-0.7, cruise 0.7-0.85, decelerate 0.85-1.0
-        for i in range(steps + 1):
-            t = i / steps
-            # Ease-in-out cubic: starts slow, accelerates, decelerates at end
-            t_eased = t * t * (3 - 2 * t)
-            # Quadratic Bezier
-            bx = int((1 - t_eased) ** 2 * start_x + 2 * (1 - t_eased) * t_eased * ctrl_x + t_eased ** 2 * end_x)
-            by = int((1 - t_eased) ** 2 * start_y + 2 * (1 - t_eased) * t_eased * ctrl_y + t_eased ** 2 * end_y)
-            # Micro-jitter perpendicular to path
-            jitter = random.randint(-1, 1)
-            jx = int(bx + jitter * perp_x / offset_mag) if offset_mag > 0 else bx
-            jy = int(by + jitter * perp_y / offset_mag) if offset_mag > 0 else by
-            track.append((jx, jy))
-
-        # Deduplicate consecutive identical points
-        deduped: list[tuple[int, int]] = [track[0]]
-        for pt in track[1:]:
-            if pt != deduped[-1]:
-                deduped.append(pt)
-
-        if not deduped or deduped[-1] != (end_x, end_y):
-            deduped.append((end_x, end_y))
-        return deduped
-
-    async def _execute_human_movement(
-        self, track: list[tuple[int, int]], delay_ms: int
-    ) -> None:
-        """Execute a generated trajectory with randomized timing."""
-        import random
-        for bx, by in track:
-            await self._do_mouse_move({"x": bx, "y": by})
-            step_delay = delay_ms * random.uniform(0.7, 1.3)
-            if random.random() < 0.05:
-                step_delay += random.randint(20, 60)
-            time.sleep(step_delay / 1000)
-        # Small random wiggle near target
-        for _ in range(random.randint(0, 2)):
-            wiggle_x = track[-1][0] + random.randint(-2, 2)
-            wiggle_y = track[-1][1] + random.randint(-1, 1)
-            await self._do_mouse_move({"x": wiggle_x, "y": wiggle_y})
-            time.sleep(random.uniform(0.05, 0.15))
-
     async def _do_mouse_drag(self, inp: dict[str, Any]) -> ToolResult:
         """Drag from (x,y) to (end_x,end_y) with human-like trajectory.
 
@@ -788,14 +795,17 @@ class ComputerTool(ToolBase):
         pauses.  This mimics real human arm movement and helps evade
         behavioural biometrics on slider CAPTCHAs.
         """
-        # Accept both (x,y) and (start_x,start_y) for the start point
-        start_x = inp.get("x") if "x" in inp else inp.get("start_x", 0)
-        start_y = inp.get("y") if "y" in inp else inp.get("start_y", 0)
-        end_x = inp.get("end_x", start_x)
-        end_y = inp.get("end_y", start_y)
+        # Accept both (x,y) and (start_x,start_y) for the start point.
+        # LLMs sometimes serialise these as strings — coerce defensively.
+        raw_start_x = inp.get("x") if "x" in inp else inp.get("start_x", 0)
+        raw_start_y = inp.get("y") if "y" in inp else inp.get("start_y", 0)
+        start_x = _coerce_int(raw_start_x)
+        start_y = _coerce_int(raw_start_y)
+        end_x = _coerce_int(inp.get("end_x", start_x))
+        end_y = _coerce_int(inp.get("end_y", start_y))
         button = inp.get("button", "left")
-        steps = max(2, min(inp.get("steps", 20), 200))
-        delay_ms = max(1, min(inp.get("delay_ms", 10), 500))
+        steps = max(2, min(_coerce_int(inp.get("steps", 20), 20), 200))
+        delay_ms = max(1, min(_coerce_int(inp.get("delay_ms", 10), 10), 500))
         # Move to start
         await self._do_mouse_move({"x": start_x, "y": start_y})
         time.sleep(0.05)
@@ -808,24 +818,22 @@ class ComputerTool(ToolBase):
             await self._do_mouse_up({"button": button})
             return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
-        track = self._generate_human_trajectory(start_x, start_y, end_x, end_y, steps, delay_ms)
-        await self._execute_human_movement(track, delay_ms)
-
-        # Final position
-        await self._do_mouse_move({"x": end_x, "y": end_y})
-        time.sleep(0.05)
+        track = generate_trajectory(start_x, start_y, end_x, end_y, steps, delay_ms, humanize=True)
+        for bx, by, d in track:
+            await self._do_mouse_move({"x": bx, "y": by})
+            time.sleep(d / 1000.0)
         # Mouse up
         await self._do_mouse_up({"button": button})
         return ToolResult(output=f"Mouse dragged from ({start_x},{start_y}) to ({end_x},{end_y})")
 
     async def _do_mouse_double_click(self, inp: dict[str, Any]) -> ToolResult:
         import random
-        x = inp.get("x")
-        y = inp.get("y")
+        x = _coerce_optional_int(inp.get("x"))
+        y = _coerce_optional_int(inp.get("y"))
         button = inp.get("button", "left")
         wander = inp.get("wander", False)
-        width = int(inp.get("width", 0))
-        height = int(inp.get("height", 0))
+        width = _coerce_int(inp.get("width", 0))
+        height = _coerce_int(inp.get("height", 0))
         if x is not None and y is not None:
             tx, ty = self._jittered_click_coords(x, y, width, height)
             await self._do_mouse_move({"x": tx, "y": ty})
@@ -865,7 +873,7 @@ class ComputerTool(ToolBase):
             return ToolResult(output="focus_window requires 'title'", is_error=True)
         try:
             import win32gui
-            import win32con
+            import win32con  # noqa: F401  (kept for backward compat with shim-based tests)
         except ImportError:
             return ToolResult(output="win32gui not available", is_error=True)
 
@@ -881,9 +889,19 @@ class ComputerTool(ToolBase):
         if not matches:
             return ToolResult(output=f"No visible window matching '{title}'", is_error=True)
         hwnd, full_title = matches[-1]
+
+        from ..utils.win_focus import force_set_foreground
+
+        ok, method = force_set_foreground(hwnd)
+        if not ok:
+            return ToolResult(
+                output=(
+                    f"Failed to focus '{full_title}' even after foreground-lock "
+                    f"workarounds (method={method})."
+                ),
+                is_error=True,
+            )
         try:
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
             rect = win32gui.GetWindowRect(hwnd)
             info = {
                 "title": full_title,
@@ -893,11 +911,12 @@ class ComputerTool(ToolBase):
                 "bottom": rect[3],
                 "width": rect[2] - rect[0],
                 "height": rect[3] - rect[1],
+                "focus_method": method,
             }
         except Exception as exc:
-            return ToolResult(output=f"Failed to focus '{full_title}': {exc}", is_error=True)
+            return ToolResult(output=f"Focus succeeded but rect unavailable for '{full_title}': {exc}", is_error=True)
         return ToolResult(
-            output=f"Focused window: {full_title} at ({info['left']},{info['top']}) size {info['width']}x{info['height']}",
+            output=f"Focused window ({method}): {full_title} at ({info['left']},{info['top']}) size {info['width']}x{info['height']}",
             details=info,
         )
 
@@ -905,6 +924,148 @@ class ComputerTool(ToolBase):
         ms = max(0, int(inp.get("milliseconds", 1000)))
         time.sleep(ms / 1000.0)
         return ToolResult(output=f"Waited {ms}ms")
+
+    async def _do_wait_for_change(self, inp: dict[str, Any]) -> ToolResult:
+        """Wait until a screen region changes compared to its initial state."""
+        try:
+            import numpy as np
+        except ImportError as exc:
+            return ToolResult(output=f"wait_for_change requires numpy: {exc}", is_error=True)
+
+        x = _coerce_int(inp.get("x", 0))
+        y = _coerce_int(inp.get("y", 0))
+        width = _coerce_optional_int(inp.get("width"))
+        height = _coerce_optional_int(inp.get("height"))
+        timeout_ms = max(100, _coerce_int(inp.get("timeout_ms", 5000), 5000))
+        interval_ms = max(50, _coerce_int(inp.get("interval_ms", 500), 500))
+        threshold = max(0.0, min(1.0, float(inp.get("threshold", 0.01))))
+
+        sct = self._ensure_mss()
+        monitor = sct.monitors[1]
+        region = {
+            "left": max(0, x),
+            "top": max(0, y),
+            "width": min(width if width is not None else monitor["width"], monitor["width"] - x),
+            "height": min(height if height is not None else monitor["height"], monitor["height"] - y),
+        }
+
+        def _capture() -> np.ndarray | None:
+            raw = sct.grab(region)
+            if raw.width == 0 or raw.height == 0:
+                return None
+            # mss ScreenShot.rgb is 3 bytes/pixel R,G,B.
+            return np.frombuffer(raw.rgb, dtype=np.uint8).reshape((raw.height, raw.width, 3))
+
+        try:
+            baseline = _capture()
+            if baseline is None:
+                return ToolResult(output="Failed to capture baseline screenshot", is_error=True)
+
+            total_pixels = baseline.size
+            if total_pixels == 0:
+                return ToolResult(output="Region has zero size", is_error=True)
+
+            elapsed = 0
+            while elapsed < timeout_ms:
+                time.sleep(interval_ms / 1000.0)
+                elapsed += interval_ms
+                current = _capture()
+                if current is None:
+                    continue
+                if current.shape != baseline.shape:
+                    return ToolResult(
+                        output=f"Change detected after {elapsed}ms (region resized)",
+                        details={"elapsed_ms": elapsed, "change_ratio": 1.0},
+                    )
+                diff = np.abs(current.astype(np.int16) - baseline.astype(np.int16))
+                changed_pixels = int(np.sum(diff > 15))
+                ratio = changed_pixels / total_pixels
+                if ratio >= threshold:
+                    return ToolResult(
+                        output=f"Change detected after {elapsed}ms ({ratio:.2%} pixels changed)",
+                        details={"elapsed_ms": elapsed, "change_ratio": ratio, "changed_pixels": changed_pixels},
+                    )
+
+            return ToolResult(
+                output=f"No change detected within {timeout_ms}ms (threshold={threshold:.2%})",
+                is_error=True,
+                details={"elapsed_ms": timeout_ms, "change_ratio": 0},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"wait_for_change error: {exc}", is_error=True)
+
+    async def _do_get_pixel_color(self, inp: dict[str, Any]) -> ToolResult:
+        """Return the RGB colour of a single screen pixel."""
+        x = _coerce_int(inp.get("x", 0))
+        y = _coerce_int(inp.get("y", 0))
+        try:
+            sct = self._ensure_mss()
+            raw = sct.grab({"left": x, "top": y, "width": 1, "height": 1})
+            # mss ScreenShot.rgb returns 3 bytes/pixel in R, G, B order.
+            r = raw.rgb[0]
+            g = raw.rgb[1]
+            b = raw.rgb[2]
+            return ToolResult(
+                output=f"Pixel at ({x},{y}): RGB({r}, {g}, {b})",
+                details={"x": x, "y": y, "r": r, "g": g, "b": b, "hex": f"#{r:02x}{g:02x}{b:02x}"},
+            )
+        except Exception as exc:
+            return ToolResult(output=f"get_pixel_color error: {exc}", is_error=True)
+
+    async def _do_detect_color(self, inp: dict[str, Any]) -> ToolResult:
+        """Search a screen region for pixels matching a target RGB colour."""
+        try:
+            import numpy as np
+        except ImportError as exc:
+            return ToolResult(output=f"detect_color requires numpy: {exc}", is_error=True)
+
+        r = max(0, min(255, _coerce_int(inp.get("r", 0))))
+        g = max(0, min(255, _coerce_int(inp.get("g", 0))))
+        b = max(0, min(255, _coerce_int(inp.get("b", 0))))
+        tolerance = max(0, min(255, _coerce_int(inp.get("tolerance", 10), 10)))
+        x = _coerce_int(inp.get("x", 0))
+        y = _coerce_int(inp.get("y", 0))
+        width = _coerce_optional_int(inp.get("width"))
+        height = _coerce_optional_int(inp.get("height"))
+
+        try:
+            sct = self._ensure_mss()
+            monitor = sct.monitors[1]
+            region = {
+                "left": max(0, x),
+                "top": max(0, y),
+                "width": min(width if width is not None else monitor["width"], monitor["width"] - x),
+                "height": min(height if height is not None else monitor["height"], monitor["height"] - y),
+            }
+            raw = sct.grab(region)
+            # mss ScreenShot.rgb is 3 bytes/pixel in R, G, B order.
+            rgb = np.frombuffer(raw.rgb, dtype=np.uint8).reshape((raw.height, raw.width, 3))
+            target = np.array([r, g, b], dtype=np.int16)
+            diff = np.abs(rgb.astype(np.int16) - target)
+            mask = np.all(diff <= tolerance, axis=2)
+            match_count = int(np.sum(mask))
+
+            if match_count == 0:
+                return ToolResult(
+                    output=f"No pixels matching RGB({r},{g},{b}) within tolerance={tolerance} in region.",
+                    details={"target_rgb": [r, g, b], "tolerance": tolerance, "match_count": 0},
+                )
+
+            # Find first match location
+            ys, xs = np.where(mask)
+            first_x = int(region["left"] + xs[0])
+            first_y = int(region["top"] + ys[0])
+            return ToolResult(
+                output=f"Found {match_count} pixels matching RGB({r},{g},{b}) (tol={tolerance}). First at ({first_x},{first_y}).",
+                details={
+                    "target_rgb": [r, g, b],
+                    "tolerance": tolerance,
+                    "match_count": match_count,
+                    "first_match": {"x": first_x, "y": first_y},
+                },
+            )
+        except Exception as exc:
+            return ToolResult(output=f"detect_color error: {exc}", is_error=True)
 
     def _match_template_multiscale(
         self,
@@ -1215,9 +1376,9 @@ class ComputerTool(ToolBase):
 
     async def _do_mouse_scroll(self, inp: dict[str, Any]) -> ToolResult:
         import random
-        amount = int(inp.get("amount", 0))
-        x = inp.get("x")
-        y = inp.get("y")
+        amount = _coerce_int(inp.get("amount", 0))
+        x = _coerce_optional_int(inp.get("x"))
+        y = _coerce_optional_int(inp.get("y"))
         smooth = inp.get("smooth", True)
         if x is not None and y is not None:
             await self._do_mouse_move({"x": x, "y": y})

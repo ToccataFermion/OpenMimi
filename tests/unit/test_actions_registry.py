@@ -1947,3 +1947,111 @@ async def test_extract_box_helper_accepts_both_shapes() -> None:
     assert _extract_box({}) is None
 
 
+def test_registry_has_captcha_actions() -> None:
+    from openmimi.tools import actions
+
+    registered = actions.registered_actions()
+    assert "slider_find_gap" in registered, "missing migrated action: slider_find_gap"
+    assert "slider_drag_cdp" in registered, "missing migrated action: slider_drag_cdp"
+
+
+@pytest.mark.asyncio
+async def test_slider_drag_cdp_builds_dispatchMouseEvent_js() -> None:
+    """slider_drag_cdp must emit eval JS containing Input.dispatchMouseEvent chain."""
+    from openmimi.tools import actions
+
+    payloads: list[str] = []
+
+    class _Engine:
+        async def _exec(self, *args: str, **_kw: Any) -> Any:
+            payloads.append(args[1] if len(args) > 1 else "")
+            return SimpleNamespace(
+                stdout='{"result":{"ok":true,"points":5,"duration_ms":120}}'
+            )
+
+        def _parse_data(self, _raw: str) -> dict[str, Any]:
+            return {"result": {"ok": True, "points": 5, "duration_ms": 120}}
+
+    result = await actions.get("slider_drag_cdp")(
+        _Engine(),
+        {"start_x": 100, "start_y": 200, "end_x": 400, "end_y": 200, "steps": 10, "humanize": False},
+    )
+    assert result.is_error is False
+    assert "Slider drag completed" in result.output
+    js = payloads[0]
+    assert "Input.dispatchMouseEvent" in js
+    assert "mousePressed" in js
+    assert "mouseMoved" in js
+    assert "mouseReleased" in js
+    assert "window.__openmimi_cdp_send" in js
+    # Start and end coordinates must appear
+    assert "100" in js
+    assert "400" in js
+
+
+@pytest.mark.asyncio
+async def test_slider_drag_cdp_reports_error_on_exception() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        async def _exec(self, *_args: str, **_kw: Any) -> Any:
+            raise RuntimeError("cdp broken")
+
+    result = await actions.get("slider_drag_cdp")(
+        _Engine(), {"start_x": 0, "start_y": 0, "end_x": 100, "end_y": 0}
+    )
+    assert result.is_error is True
+    assert "slider_drag_cdp error" in result.output
+
+
+@pytest.mark.asyncio
+async def test_slider_find_gap_requires_inputs() -> None:
+    from openmimi.tools import actions
+
+    class _Engine:
+        pass
+
+    result = await actions.get("slider_find_gap")(_Engine(), {})
+    assert result.is_error is True
+    assert "slider_find_gap requires" in result.output
+
+
+@pytest.mark.asyncio
+async def test_slider_find_gap_finds_gap_with_synthetic_images() -> None:
+    """Create a synthetic background with a dark slot and a matching puzzle piece."""
+    cv2 = pytest.importorskip("cv2", reason="opencv-python not installed")
+    from openmimi.tools import actions
+
+    import numpy as np
+    import tempfile
+    import os
+
+    # Piece: dark color with a white dot pattern so template matching has a unique peak
+    piece = np.ones((40, 30, 3), dtype=np.uint8) * 30
+    piece[10:15, 10:15, :] = 255  # white dot
+
+    # Background: white image with the exact piece content placed at x=50, y=30
+    bg = np.ones((100, 200, 3), dtype=np.uint8) * 255
+    bg[30:70, 50:80, :] = piece  # embed piece so perfect match exists at x=50
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bg_path = os.path.join(tmpdir, "bg.png")
+        piece_path = os.path.join(tmpdir, "piece.png")
+        cv2.imwrite(bg_path, bg)
+        cv2.imwrite(piece_path, piece)
+
+        class _Engine:
+            pass
+
+        result = await actions.get("slider_find_gap")(
+            _Engine(), {"bg_path": bg_path, "piece_path": piece_path}
+        )
+        assert result.is_error is False, result.output
+        details = result.details
+        assert details is not None
+        # Gap should be around x=50 (allow some tolerance for matching method)
+        gap_x = details.get("gap_x", -1)
+        assert 45 <= gap_x <= 55, f"expected gap near 50, got {gap_x}"
+        assert details.get("confidence", 0) > 0.5
+
+

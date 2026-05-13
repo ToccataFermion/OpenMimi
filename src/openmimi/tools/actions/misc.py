@@ -91,7 +91,7 @@ async def download(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResul
 
 @register("eval")
 async def eval_js(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
-    js = inp.get("js", "")
+    js = inp.get("js") or inp.get("js_code") or ""
     if not js.strip():
         return ToolResult(
             output="eval requires non-empty 'js' field", is_error=True
@@ -123,9 +123,26 @@ async def eval_js(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult
 @register("batch")
 async def batch(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     steps = inp.get("steps", [])
-    if not steps:
-        return ToolResult(output="batch requires 'steps' array")
-    args = ["batch", "--bail", "--json"] + steps
+    if not isinstance(steps, list) or not steps:
+        return ToolResult(
+            output="batch requires non-empty 'steps' array of strings",
+            is_error=True,
+        )
+    normalized: list[str] = []
+    for idx, step in enumerate(steps):
+        if isinstance(step, list):
+            # Tolerate token arrays (agent-browser stdin JSON shape).
+            step = " ".join(str(t) for t in step)
+        if not isinstance(step, str) or not step.strip():
+            return ToolResult(
+                output=(
+                    f"batch step {idx} must be a non-empty string (got {type(step).__name__}: {step!r}). "
+                    f"Each step is a full agent-browser command, e.g. 'mouse move 100 200'."
+                ),
+                is_error=True,
+            )
+        normalized.append(step)
+    args = ["batch", "--bail", "--json"] + normalized
     result = await engine._exec(*args)
     data = engine._parse_data(result.stdout)
     image = await engine._take_screenshot()
@@ -191,7 +208,6 @@ async def focus(engine: "AgentBrowserTool", _inp: dict[str, Any]) -> ToolResult:
     """Bring the browser window to the foreground using win32gui."""
     try:
         import win32gui
-        import win32con
     except ImportError:
         return ToolResult(output="win32gui not available", is_error=True)
 
@@ -250,15 +266,18 @@ async def focus(engine: "AgentBrowserTool", _inp: dict[str, Any]) -> ToolResult:
         )
 
     hwnd, wt, _score = best
-    try:
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        win32gui.SetForegroundWindow(hwnd)
-    except Exception as exc:
+    from ...utils.win_focus import force_set_foreground
+
+    ok, method = force_set_foreground(hwnd)
+    if not ok:
         return ToolResult(
-            output=f"Failed to focus browser window '{wt}': {exc}",
+            output=(
+                f"Failed to focus browser window '{wt}' even after foreground-lock "
+                f"workarounds (method={method})."
+            ),
             is_error=True,
         )
-    return ToolResult(output=f"Browser window focused: {wt}")
+    return ToolResult(output=f"Browser window focused ({method}): {wt}")
 
 
 @register("set_viewport")

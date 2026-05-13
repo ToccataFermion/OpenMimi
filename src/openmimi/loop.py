@@ -96,8 +96,15 @@ Browser best practices:
 - Keyboard shortcuts: use action='key_combo' with a 'keys' array.
 - Lazy content: use action='wait_for' with ref or target_text instead of sleeping.
 - Coordinates: use action='get_box' before OS-level mouse actions.
-- CAPTCHA: focus the browser window, then use computer.mouse_drag with
-  a SLOW horizontal drag (steps=80, delay_ms=25) at exact screen coordinates.
+- OS-level vision/mouse (computer.screenshot / detect_color / mouse_drag) acts on
+  the desktop as-is. If the browser is not on top, you will see other apps
+  instead. Before ANY OS-level vision or mouse_drag on a browser target, ALWAYS
+  call computer.focus_window title="<window title substring>" first. It
+  returns the focused window's rect {left, top, right, bottom, width, height};
+  pass those into detect_color's x/y/width/height so you search only inside
+  the browser, not the whole desktop.
+- CAPTCHA: focus_window first, then computer.mouse_drag with a SLOW horizontal
+  drag (humanize=true, steps=80, delay_ms=25) at exact screen coordinates.
 - First navigate may take 2-5 min while Chromium starts; retry once if timed out.
 """
 
