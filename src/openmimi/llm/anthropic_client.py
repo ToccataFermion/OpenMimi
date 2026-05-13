@@ -80,6 +80,7 @@ class AnthropicClient:
     ) -> dict[str, Any]:
         system_param = self._build_system(system)
         tools_param = self._build_tools(tools)
+        messages_param = self._build_messages(messages)
 
         self._call_index += 1
         idx = self._call_index
@@ -92,7 +93,7 @@ class AnthropicClient:
             result = await self._client.messages.create(
                 model=self._model,
                 system=system_param,
-                messages=messages,
+                messages=messages_param,
                 tools=tools_param,
                 max_tokens=max_tokens,
             )
@@ -143,6 +144,92 @@ class AnthropicClient:
             return cloned
         cloned[-1] = {**cloned[-1], "cache_control": {"type": "ephemeral"}}
         return cloned
+
+    def _build_messages(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Strip stale cache_control markers and add a fresh breakpoint.
+
+        Anthropic prompt caching is prefix-based: everything before a
+        ``cache_control`` block is cached and billed at the cheap read rate
+        on subsequent requests.  We already cache ``system`` and the last
+        ``tool`` definition.  Here we place a third breakpoint inside the
+        message history so that earlier conversation turns are also cached.
+
+        The breakpoint is placed on the message that's ~2 turns back from
+        the end (each turn = assistant + user = 2 messages, so ``-3`` keeps
+        the most recent 1.5 turns uncached).
+        """
+        # Always strip old markers so they don't accumulate across turns.
+        cloned = _strip_message_caches(messages)
+
+        if not self._enable_caching or len(cloned) < 4:
+            return cloned
+
+        breakpoint_idx = len(cloned) - 3
+        if breakpoint_idx < 0:
+            return cloned
+
+        msg = cloned[breakpoint_idx]
+        content = msg.get("content")
+
+        if isinstance(content, str):
+            msg["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(content, list):
+            new_content: list[dict[str, Any]] = []
+            found_text = False
+            for i in range(len(content) - 1, -1, -1):
+                block = content[i]
+                if isinstance(block, dict) and block.get("type") == "text":
+                    new_content = [dict(b) for b in content]
+                    new_content[i] = {
+                        **new_content[i],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                    found_text = True
+                    break
+
+            if not found_text:
+                new_content = [dict(b) for b in content]
+                new_content.append(
+                    {
+                        "type": "text",
+                        "text": " ",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                )
+
+            msg["content"] = new_content
+
+        return cloned
+
+
+def _strip_message_caches(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Remove any ``cache_control`` keys from message content blocks."""
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        cloned = dict(msg)
+        content = cloned.get("content")
+        if isinstance(content, list):
+            new_content: list[Any] = []
+            for block in content:
+                if isinstance(block, dict):
+                    new_block = dict(block)
+                    new_block.pop("cache_control", None)
+                    new_content.append(new_block)
+                else:
+                    new_content.append(block)
+            cloned["content"] = new_content
+        result.append(cloned)
+    return result
 
 
 def _to_dict(message: Any) -> dict[str, Any]:

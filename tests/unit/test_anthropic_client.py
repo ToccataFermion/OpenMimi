@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from openmimi.llm.anthropic_client import AnthropicClient
+from openmimi.llm.anthropic_client import AnthropicClient, _strip_message_caches
 
 
 class _FakeMessages:
@@ -221,3 +221,122 @@ def test_real_client_construction_passes_timeout(
     )
     assert captured["base_url"] == "https://x.example.com"
     assert captured["timeout"] == 7.0
+
+
+def test_strip_message_caches_removes_markers() -> None:
+    raw = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+            ],
+        }
+    ]
+    out = _strip_message_caches(raw)
+    assert "cache_control" not in out[0]["content"][0]
+    # Original must not be mutated
+    assert "cache_control" in raw[0]["content"][0]
+
+
+@pytest.mark.asyncio
+async def test_message_caching_skipped_when_too_few_messages() -> None:
+    fake = _FakeClient(_FakeMessageObject({"content": [], "stop_reason": "end_turn"}))
+    client = AnthropicClient(model="claude-x", client=fake)
+
+    await client.create(
+        system="r",
+        messages=[
+            {"role": "user", "content": [{"type": "text", "text": "a"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "b"}]},
+        ],
+        tools=[],
+        max_tokens=8,
+    )
+
+    msgs = fake.messages.calls[0]["messages"]
+    for m in msgs:
+        for block in m.get("content", []):
+            assert "cache_control" not in block
+
+
+@pytest.mark.asyncio
+async def test_message_caching_places_breakpoint_on_text_block() -> None:
+    fake = _FakeClient(_FakeMessageObject({"content": [], "stop_reason": "end_turn"}))
+    client = AnthropicClient(model="claude-x", client=fake)
+
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "turn-0-user"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "turn-0-assistant"}]},
+        {"role": "user", "content": [{"type": "text", "text": "turn-1-user"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "turn-1-assistant"}]},
+        {"role": "user", "content": [{"type": "text", "text": "turn-2-user"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "turn-2-assistant"}]},
+    ]
+
+    await client.create(
+        system="r", messages=messages, tools=[], max_tokens=8
+    )
+
+    msgs = fake.messages.calls[0]["messages"]
+    # Breakpoint should be on message at index len-3 = 3 (turn-1-assistant)
+    assert msgs[3]["content"][0].get("cache_control") == {"type": "ephemeral"}
+    # Earlier and later messages must not have cache_control
+    assert "cache_control" not in msgs[0]["content"][0]
+    assert "cache_control" not in msgs[4]["content"][0]
+    assert "cache_control" not in msgs[5]["content"][0]
+
+
+@pytest.mark.asyncio
+async def test_message_caching_appends_text_when_no_text_block() -> None:
+    fake = _FakeClient(_FakeMessageObject({"content": [], "stop_reason": "end_turn"}))
+    client = AnthropicClient(model="claude-x", client=fake)
+
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "a"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "b"}]},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "x", "content": []}],
+        },
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "y", "name": "n", "input": {}}]},
+    ]
+
+    await client.create(
+        system="r", messages=messages, tools=[], max_tokens=8
+    )
+
+    msgs = fake.messages.calls[0]["messages"]
+    # Breakpoint is on index 1 (len-3 = 1) which has a text block
+    assert msgs[1]["content"][0].get("cache_control") == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_message_caching_strips_old_markers_before_adding_new() -> None:
+    fake = _FakeClient(_FakeMessageObject({"content": [], "stop_reason": "end_turn"}))
+    client = AnthropicClient(model="claude-x", client=fake)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "old",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "a"}]},
+        {"role": "user", "content": [{"type": "text", "text": "b"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "c"}]},
+    ]
+
+    await client.create(
+        system="r", messages=messages, tools=[], max_tokens=8
+    )
+
+    msgs = fake.messages.calls[0]["messages"]
+    # Old marker stripped
+    assert "cache_control" not in msgs[0]["content"][0]
+    # New marker on index 1 (len-3 = 1)
+    assert msgs[1]["content"][0].get("cache_control") == {"type": "ephemeral"}

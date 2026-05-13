@@ -860,7 +860,11 @@ def _dump_prompt(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
 ) -> None:
-    """Write the full LLM request payload to disk for debugging."""
+    """Write the LLM request payload to disk for debugging.
+
+    Base64 image data is stripped so the JSON files stay small (a single
+    screenshot can add ~1 MB of text).
+    """
     from pathlib import Path
 
     try:
@@ -870,7 +874,7 @@ def _dump_prompt(
             "session_id": session_id,
             "turn": turn,
             "system": system,
-            "messages": messages,
+            "messages": _strip_images_for_dump(messages),
             "tools": tools,
         }
         path = prompt_dir / f"{session_id}_turn{turn}.json"
@@ -880,6 +884,42 @@ def _dump_prompt(
         )
     except Exception:
         pass
+
+
+def _strip_images_for_dump(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a deep copy with image blocks replaced by text placeholders."""
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        cloned = dict(msg)
+        content = cloned.get("content")
+        if isinstance(content, list):
+            cloned["content"] = [_strip_image_block(b) for b in content]
+        result.append(cloned)
+    return result
+
+
+def _strip_image_block(block: Any) -> Any:
+    if not isinstance(block, dict):
+        return block
+
+    btype = block.get("type")
+
+    # Top-level image in a user/assistant message
+    if btype == "image":
+        return {"type": "text", "text": "[image stripped for debug dump]"}
+
+    # Image inside a tool_result
+    if btype == "tool_result":
+        sub = block.get("content")
+        if isinstance(sub, list):
+            new_block = dict(block)
+            new_block["content"] = [_strip_image_block(b) for b in sub]
+            return new_block
+        return block
+
+    return block
 
 
 __all__ = ["AuditSink", "EpisodicSink", "sampling_loop"]

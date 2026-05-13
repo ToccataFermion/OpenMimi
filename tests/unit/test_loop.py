@@ -1419,3 +1419,89 @@ async def test_no_episodic_means_no_calls() -> None:
         messages=messages, tools=coll, llm=llm, session_id="s"
     )
     assert len(out) == 4
+
+
+# --- _strip_images_for_dump (#prompt-debug) ---------------------------------
+
+
+def test_strip_images_for_dump_replaces_top_level_image() -> None:
+    from openmimi.loop import _strip_images_for_dump
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "abcd1234" * 1000,
+                    },
+                },
+            ],
+        }
+    ]
+    out = _strip_images_for_dump(messages)
+    blocks = out[0]["content"]
+    assert blocks[0] == {"type": "text", "text": "hi"}
+    assert blocks[1] == {"type": "text", "text": "[image stripped for debug dump]"}
+    # Original untouched
+    assert messages[0]["content"][1]["type"] == "image"
+
+
+def test_strip_images_for_dump_replaces_image_inside_tool_result() -> None:
+    from openmimi.loop import _strip_images_for_dump
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "content": [
+                        {"type": "text", "text": "screenshot taken"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "xyz789" * 1000,
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+    out = _strip_images_for_dump(messages)
+    tr = out[0]["content"][0]
+    sub = tr["content"]
+    assert sub[0] == {"type": "text", "text": "screenshot taken"}
+    assert sub[1] == {"type": "text", "text": "[image stripped for debug dump]"}
+
+
+def test_strip_images_for_dump_leaves_text_and_tool_use_alone() -> None:
+    from openmimi.loop import _strip_images_for_dump
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "ok"},
+                {"type": "tool_use", "id": "x", "name": "browser", "input": {}},
+            ],
+        }
+    ]
+    out = _strip_images_for_dump(messages)
+    assert out == messages
+
+
+def test_strip_images_for_dump_handles_string_content() -> None:
+    from openmimi.loop import _strip_images_for_dump
+
+    messages = [{"role": "user", "content": "plain text"}]
+    out = _strip_images_for_dump(messages)
+    assert out == messages
