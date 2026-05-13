@@ -45,7 +45,6 @@ async def click(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         )
     data = engine._parse_data(result.stdout)
     await engine._switch_to_newest_tab()
-    image = await engine._take_screenshot()
     clicked = data.get("clicked", "element")
     details = {
         "open_tabs": engine._tabs,
@@ -53,7 +52,6 @@ async def click(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     }
     return ToolResult(
         output=f"Clicked {clicked}",
-        base64_image=image,
         details=details,
     )
 
@@ -90,10 +88,8 @@ async def _click_with_mouse(
     await engine._exec("mouse", "up", "left", "--json")
     await asyncio.sleep(0.1)
 
-    image = await engine._take_screenshot()
     return ToolResult(
         output=f"Force-clicked {selector} at ({x}, {y}) via mouse down/up",
-        base64_image=image,
     )
 
 
@@ -129,11 +125,7 @@ async def right_click(
     await asyncio.sleep(0.05)
     await engine._exec("mouse", "up", "right", "--json")
     await asyncio.sleep(0.1)
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Right-clicked {selector} at ({x}, {y})",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Right-clicked {selector} at ({x}, {y})")
 
 
 @register("double_click")
@@ -169,11 +161,7 @@ async def double_click(
         await asyncio.sleep(0.05)
         await engine._exec("mouse", "up", "left", "--json")
     await asyncio.sleep(0.1)
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Double-clicked {selector} at ({x}, {y})",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Double-clicked {selector} at ({x}, {y})")
 
 
 @register("check")
@@ -186,8 +174,7 @@ async def check(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         await engine._exec("find", "text", target_text, "check", "--json")
     else:
         return ToolResult(output="check requires 'ref' or 'target_text'")
-    image = await engine._take_screenshot()
-    return ToolResult(output="Checked element", base64_image=image)
+    return ToolResult(output="Checked element")
 
 
 @register("uncheck")
@@ -202,8 +189,7 @@ async def uncheck(
         await engine._exec("find", "text", target_text, "uncheck", "--json")
     else:
         return ToolResult(output="uncheck requires 'ref' or 'target_text'")
-    image = await engine._take_screenshot()
-    return ToolResult(output="Unchecked element", base64_image=image)
+    return ToolResult(output="Unchecked element")
 
 
 @register("type")
@@ -222,11 +208,7 @@ async def type_(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         await engine._exec("keyboard", "type", value, "--json")
     else:
         return ToolResult(output="type requires 'ref' or 'target_text'")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Typed {len(value)} character(s)",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Typed {len(value)} character(s)")
 
 
 @register("fill")
@@ -248,11 +230,7 @@ async def fill(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         await engine._exec("keyboard", "type", value, "--json")
     else:
         return ToolResult(output="fill requires 'ref' or 'target_text'")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Filled with {len(value)} character(s)",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Filled with {len(value)} character(s)")
 
 
 @register("react_fill")
@@ -364,10 +342,8 @@ async def react_fill(
                 output=f"react_fill failed: {result_value['error']}",
                 is_error=True,
             )
-        image = await engine._take_screenshot()
         return ToolResult(
             output=f"React-filled {len(value)} character(s) via {result_value.get('method', 'unknown')}",
-            base64_image=image,
             details=result_value,
         )
     except Exception as exc:
@@ -378,8 +354,7 @@ async def react_fill(
 async def press(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     key = inp.get("key", "Enter")
     await engine._exec("press", key, "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(output=f"Pressed {key}", base64_image=image)
+    return ToolResult(output=f"Pressed {key}")
 
 
 @register("key_combo")
@@ -425,10 +400,8 @@ async def key_combo(
                 output=f"key_combo failed: {result_value['error']}",
                 is_error=True,
             )
-        image = await engine._take_screenshot()
         return ToolResult(
             output=f"Key combo pressed: {'+'.join(keys)}",
-            base64_image=image,
             details=result_value,
         )
     except Exception as exc:
@@ -445,5 +418,4 @@ async def hover(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         await engine._exec("find", "text", target_text, "hover", "--json")
     else:
         return ToolResult(output="hover requires 'ref' or 'target_text'")
-    image = await engine._take_screenshot()
-    return ToolResult(output="Hovered element", base64_image=image)
+    return ToolResult(output="Hovered element")

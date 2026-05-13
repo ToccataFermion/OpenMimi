@@ -74,10 +74,8 @@ async def tab_switch(
         tab_id = engine._tabs[idx - 1].get("id", f"t{idx}")
         await engine._exec("tab", tab_id, "--json")
         engine._active_tab_index = idx
-        image = await engine._take_screenshot()
         return ToolResult(
             output=f"Switched to tab {idx}",
-            base64_image=image,
             details={"open_tabs": engine._tabs, "active_tab": idx},
         )
     return ToolResult(output=f"Invalid tab index {idx}")
@@ -92,10 +90,8 @@ async def tab_new(
     await engine._refresh_tabs()
     idx = engine._active_tab_index
     total = len(engine._tabs) if isinstance(engine._tabs, list) else 0
-    image = await engine._take_screenshot()
     return ToolResult(
         output=f"New tab opened: {url} (now at tab {idx} of {total})",
-        base64_image=image,
         details={"open_tabs": engine._tabs, "active_tab": idx, "new_tab_index": idx},
     )
 

@@ -27,11 +27,7 @@ async def scroll(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     direction = inp.get("direction", "down")
     amount = inp.get("amount", 500)
     await engine._exec("scroll", direction, str(amount), "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Scrolled {direction} {amount}px",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Scrolled {direction} {amount}px")
 
 
 @register("human_scroll")
@@ -63,11 +59,7 @@ async def human_scroll(
         delay = (pause_ms * random.uniform(0.7, 1.3)) / 1000.0
         await asyncio.sleep(max(0.05, delay))
 
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Human-scrolled {direction} ~{amount}px in {steps} steps",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Human-scrolled {direction} ~{amount}px in {steps} steps")
 
 
 @register("scroll_until")
@@ -176,10 +168,8 @@ async def scroll_into_view(
                 output=f"scroll_into_view failed: {result_value['error']}",
                 is_error=True,
             )
-        image = await engine._take_screenshot()
         return ToolResult(
             output=f"Scrolled into view: {json.dumps(result_value, ensure_ascii=False)[:200]}",
-            base64_image=image,
         )
     except Exception as exc:
         return ToolResult(

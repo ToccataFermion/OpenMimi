@@ -32,7 +32,6 @@ async def snapshot(
 ) -> ToolResult:
     snap = await engine._exec("snapshot", "--json")
     text, refs = engine._parse_snapshot(snap.stdout)
-    image = await engine._take_screenshot()
     details = {
         "open_tabs": engine._tabs,
         "active_tab": engine._active_tab_index,
@@ -46,10 +45,9 @@ async def snapshot(
             output=(
                 f"A CAPTCHA challenge is present on the page. "
                 f"Type: {captcha_info['type']}. "
-                f"You may analyze the screenshot to solve it.\n\n"
+                f"Call action='screenshot' if you need to see it visually.\n\n"
                 f"Snapshot:\n{text}"
             ),
-            base64_image=image,
             is_error=False,
             details={
                 **details,
@@ -58,7 +56,6 @@ async def snapshot(
         )
     return ToolResult(
         output=f"Snapshot:\n{text}",
-        base64_image=image,
         details=details,
     )
 
@@ -221,11 +218,7 @@ async def set_attribute(
             return ToolResult(
                 output=f"set_attribute: {result_value['error']}", is_error=True
             )
-        image = await engine._take_screenshot()
-        return ToolResult(
-            output=f"Set attribute '{attr_name}' to {attr_value!r}",
-            base64_image=image,
-        )
+        return ToolResult(output=f"Set attribute '{attr_name}' to {attr_value!r}")
     except Exception as exc:
         return ToolResult(output=f"set_attribute error: {exc}", is_error=True)
 

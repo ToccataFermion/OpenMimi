@@ -164,10 +164,8 @@ async def wait_for_navigation(
             current_url = data.get("result") if isinstance(data, dict) else ""
             if current_url != start_url:
                 if not expected_url or expected_url in current_url:
-                    image = await engine._take_screenshot()
                     return ToolResult(
                         output=f"Navigation detected: {start_url} -> {current_url}",
-                        base64_image=image,
                         details={"previous_url": start_url, "current_url": current_url},
                     )
         except Exception:

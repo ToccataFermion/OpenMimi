@@ -37,7 +37,6 @@ async def navigate(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResul
         snapshot = await engine._exec("snapshot", "--json")
         text, _ = engine._parse_snapshot(snapshot.stdout)
 
-    image = await engine._take_screenshot()
     details = {
         "url": url,
         "open_tabs": engine._tabs,
@@ -45,7 +44,6 @@ async def navigate(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResul
     }
     return ToolResult(
         output=f"Navigated to {url}\n{text[:2000]}",
-        base64_image=image,
         details=details,
     )
 
@@ -53,28 +51,16 @@ async def navigate(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResul
 @register("back")
 async def back(engine: "AgentBrowserTool", _inp: dict[str, Any]) -> ToolResult:
     result = await engine._exec("back", "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Navigated back\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Navigated back\n{result.stdout[:1000]}")
 
 
 @register("forward")
 async def forward(engine: "AgentBrowserTool", _inp: dict[str, Any]) -> ToolResult:
     result = await engine._exec("forward", "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Navigated forward\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Navigated forward\n{result.stdout[:1000]}")
 
 
 @register("reload")
 async def reload(engine: "AgentBrowserTool", _inp: dict[str, Any]) -> ToolResult:
     result = await engine._exec("reload", "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Page reloaded\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Page reloaded\n{result.stdout[:1000]}")

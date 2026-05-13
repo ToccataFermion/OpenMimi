@@ -167,6 +167,8 @@ def _print_welcome(session_id: str) -> None:
 """
     print(logo)
     print(f"  session : {session_id}")
+    vision = _screenshots_status()
+    print(f"  vision  : {vision}  (toggle with /screenshots on|off or --screenshots)")
     print(f"  tips    : 输入任务开始，/exit 或 Ctrl+C 退出")
     print()
 

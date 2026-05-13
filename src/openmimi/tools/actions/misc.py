@@ -41,11 +41,7 @@ async def select(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         return ToolResult(output="select requires 'ref' or 'target_text'", is_error=True)
     args = ["select", selector] + [str(o) for o in options] + ["--json"]
     result = await engine._exec(*args)
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Selected {options} on {selector}\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Selected {options} on {selector}\n{result.stdout[:1000]}")
 
 
 @register("upload")
@@ -59,11 +55,7 @@ async def upload(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     if not selector:
         return ToolResult(output="upload requires 'ref' or 'target_text'", is_error=True)
     result = await engine._exec("upload", selector, file_path, "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Uploaded {file_path} to {selector}\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Uploaded {file_path} to {selector}\n{result.stdout[:1000]}")
 
 
 @register("download")
@@ -77,11 +69,7 @@ async def download(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResul
     if not selector:
         return ToolResult(output="download requires 'ref' or 'target_text'", is_error=True)
     result = await engine._exec("download", selector, save_path, "--json")
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=f"Downloaded to {save_path} from {selector}\n{result.stdout[:1000]}",
-        base64_image=image,
-    )
+    return ToolResult(output=f"Downloaded to {save_path} from {selector}\n{result.stdout[:1000]}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,11 +133,7 @@ async def batch(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
     args = ["batch", "--bail", "--json"] + normalized
     result = await engine._exec(*args)
     data = engine._parse_data(result.stdout)
-    image = await engine._take_screenshot()
-    return ToolResult(
-        output=json.dumps(data, ensure_ascii=False, indent=2)[:4000],
-        base64_image=image,
-    )
+    return ToolResult(output=json.dumps(data, ensure_ascii=False, indent=2)[:4000])
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +160,7 @@ async def drag(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         return ToolResult(
             output="drag requires 'ref'+'to_ref' or 'target_text'+'to_target_text'"
         )
-    image = await engine._take_screenshot()
-    return ToolResult(output="Dragged element", base64_image=image)
+    return ToolResult(output="Dragged element")
 
 
 @register("mouse")
@@ -199,8 +182,7 @@ async def mouse(engine: "AgentBrowserTool", inp: dict[str, Any]) -> ToolResult:
         await engine._exec("mouse", "wheel", str(dy), str(dx), "--json")
     else:
         return ToolResult(output=f"Unknown mouse_action: {mouse_action}")
-    image = await engine._take_screenshot()
-    return ToolResult(output=f"Mouse {mouse_action}", base64_image=image)
+    return ToolResult(output=f"Mouse {mouse_action}")
 
 
 @register("focus")
@@ -393,10 +375,8 @@ async def emulate_device(engine: "AgentBrowserTool", inp: dict[str, Any]) -> Too
         data = engine._parse_data(result.stdout)
         result_value = data.get("result") if isinstance(data, dict) else None
         if isinstance(result_value, dict) and result_value.get("ok"):
-            image = await engine._take_screenshot()
             return ToolResult(
                 output=f"Emulating {device_name}: {width}x{height} @ {dpr}x DPR",
-                base64_image=image,
                 details={"device": device_name, "width": width, "height": height, "dpr": dpr},
             )
     except Exception:
@@ -419,10 +399,8 @@ async def emulate_device(engine: "AgentBrowserTool", inp: dict[str, Any]) -> Too
         result = await engine._exec("eval", js, "--json")
         data = engine._parse_data(result.stdout)
         result_value = data.get("result") if isinstance(data, dict) else None
-        image = await engine._take_screenshot()
         return ToolResult(
             output=f"Emulating {device_name} (JS fallback): {json.dumps(result_value, ensure_ascii=False)[:500]}",
-            base64_image=image,
             details={"device": device_name, "width": width, "height": height, "dpr": dpr},
         )
     except Exception as exc:
